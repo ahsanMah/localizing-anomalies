@@ -189,7 +189,9 @@ def cache_score_norms(preset, dataset_path, outdir, device="cpu"):
     dsobj = ImageFolderDataset(path=dataset_path, resolution=64)
     refimg, reflabel = dsobj[0]
     print(f"Loading dataset from {dataset_path}")
-    print(f"Number of Samples: {len(dsobj)} - shape: {refimg.shape}, dtype: {refimg.dtype}, labels {reflabel}")
+    print(
+        f"Number of Samples: {len(dsobj)} - shape: {refimg.shape}, dtype: {refimg.dtype}, labels {reflabel}"
+    )
     dsloader = torch.utils.data.DataLoader(
         dsobj, batch_size=48, num_workers=4, prefetch_factor=2
     )
@@ -211,7 +213,7 @@ def cache_score_norms(preset, dataset_path, outdir, device="cpu"):
     print(f"Computed score norms for {score_norms.shape[0]} samples")
 
 
-def train_flow(dataset_path, preset, device="cuda"):
+def train_flow(dataset_path, preset, outdir, device="cuda"):
     dsobj = ImageFolderDataset(path=dataset_path, resolution=64)
     refimg, reflabel = dsobj[0]
     print(f"Loaded {len(dsobj)} samples from {dataset_path}")
@@ -252,6 +254,7 @@ def train_flow(dataset_path, preset, device="cuda"):
         device=device,
     )
 
+    os.makedirs(f"{outdir}/{preset}", exist_ok=True)
     pbar = tqdm(trainiter, desc="Train Loss: ? - Val Loss: ?")
     step = 0
 
@@ -280,8 +283,8 @@ def train_flow(dataset_path, preset, device="cuda"):
             f"Step: {step:d} - Train: {train_loss:.3f} - Val: {val_loss:.3f}"
         )
         step += 1
-
-    torch.save(model.flow.state_dict(), f"out/msma/{preset}/flow.pt")
+    
+    torch.save(model.flow.state_dict(), f"{outdir}/{preset}/flow.pt")
 
 
 @torch.inference_mode
@@ -327,22 +330,43 @@ def test_flow_runner(preset, device="cpu", load_weights=None):
 @click.command()
 
 # Main options.
-@click.option('--run',             help='Which function to run',
-              type=click.Choice(['cache-scores', 'train-flow', 'train-gmm'], case_sensitive=False)
+@click.option(
+    "--run",
+    help="Which function to run",
+    type=click.Choice(
+        ["cache-scores", "train-flow", "train-gmm"], case_sensitive=False
+    ),
 )
-@click.option('--outdir',           help='Where to load/save the results', metavar='DIR',            type=str, required=True)
-@click.option('--preset',           help='Configuration preset', metavar='STR',                 type=str, default='edm2-img64-s-fid', show_default=True)
-@click.option('--data',             help='Path to the dataset', metavar='ZIP|DIR',              type=str, default=None)
+@click.option(
+    "--outdir",
+    help="Where to load/save the results",
+    metavar="DIR",
+    type=str,
+    required=True,
+)
+@click.option(
+    "--preset",
+    help="Configuration preset",
+    metavar="STR",
+    type=str,
+    default="edm2-img64-s-fid",
+    show_default=True,
+)
+@click.option(
+    "--data", help="Path to the dataset", metavar="ZIP|DIR", type=str, default=None
+)
 def cmdline(run, outdir, **opts):
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    preset = opts['preset']
-    dataset_path = opts['data']
+    preset = opts["preset"]
+    dataset_path = opts["data"]
 
-    if run in ['cache-scores', 'train-flow']:
-        assert opts['data'] is not None, "Provide path to dataset"
-
+    if run in ["cache-scores", "train-flow"]:
+        assert opts["data"] is not None, "Provide path to dataset"
+    
     if run == "cache-scores":
-        cache_score_norms(preset=preset, dataset_path=dataset_path, outdir=outdir, device=device)
+        cache_score_norms(
+            preset=preset, dataset_path=dataset_path, outdir=outdir, device=device
+        )
 
     if run == "train-gmm":
         train_gmm(
@@ -350,8 +374,11 @@ def cmdline(run, outdir, **opts):
             outdir=f"{outdir}/{preset}",
             grid_search=True,
         )
+    
+    if run == "train-flow":
+        train_flow(dataset_path, outdir=outdir, preset=preset, device=device)
+        test_flow_runner(preset, device=device, load_weights=f"{outdir}/{preset}/flow.pt")
 
-    # test_flow_runner("cuda", f"out/msma/{preset}/flow.pt")
     # train_flow(imagenette_path, preset, device)
 
     # cache_score_norms(
@@ -367,6 +394,7 @@ def cmdline(run, outdir, **opts):
     # s = s.to("cpu").numpy()
     # nll, pct = compute_gmm_likelihood(s, gmmdir=f"out/msma/{preset}/")
     # print(f"Anomaly score for image: {nll[0]:.3f} @ {pct*100:.2f} percentile")
+
 
 if __name__ == "__main__":
     cmdline()
