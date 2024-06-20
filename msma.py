@@ -3,6 +3,7 @@ import pickle
 from functools import partial
 from pickle import dump, load
 
+import click
 import numpy as np
 import PIL.Image
 import torch
@@ -95,12 +96,12 @@ class EDMScorer(torch.nn.Module):
 class ScoreFlow(torch.nn.Module):
     def __init__(
         self,
-        scorenet,
-        vectorize=False,
+        preset,
         device="cpu",
     ):
         super().__init__()
 
+        scorenet = build_model(preset)
         h = w = scorenet.net.img_resolution
         c = scorenet.net.img_channels
         num_sigmas = len(scorenet.sigma_steps)
@@ -134,9 +135,9 @@ def train_gmm(score_path, outdir, grid_search=False):
     gm = GaussianMixture(
         n_components=7, init_params="kmeans", covariance_type="full", max_iter=100000
     )
+    clf = Pipeline([("scaler", StandardScaler()), ("GMM", gm)])
 
     if grid_search:
-        clf = Pipeline([("scaler", StandardScaler()), ("GMM", gm)])
         param_grid = dict(
             GMM__n_components=range(2, 11, 1),
         )
@@ -184,10 +185,11 @@ def compute_gmm_likelihood(x_score, gmmdir):
     return nll, percentile
 
 
-def cache_score_norms(preset, dataset_path, device="cpu"):
+def cache_score_norms(preset, dataset_path, outdir, device="cpu"):
     dsobj = ImageFolderDataset(path=dataset_path, resolution=64)
     refimg, reflabel = dsobj[0]
-    print(refimg.shape, refimg.dtype, reflabel)
+    print(f"Loading dataset from {dataset_path}")
+    print(f"Number of Samples: {len(dsobj)} - shape: {refimg.shape}, dtype: {refimg.dtype}, labels {reflabel}")
     dsloader = torch.utils.data.DataLoader(
         dsobj, batch_size=48, num_workers=4, prefetch_factor=2
     )
@@ -202,8 +204,8 @@ def cache_score_norms(preset, dataset_path, device="cpu"):
 
     score_norms = torch.cat(score_norms, dim=0)
 
-    os.makedirs("out/msma", exist_ok=True)
-    with open(f"out/msma/{preset}_imagenette_score_norms.pt", "wb") as f:
+    os.makedirs(f"{outdir}/{preset}/", exist_ok=True)
+    with open(f"{outdir}/{preset}/imagenette_score_norms.pt", "wb") as f:
         torch.save(score_norms, f)
 
     print(f"Computed score norms for {score_norms.shape[0]} samples")
@@ -232,7 +234,7 @@ def train_flow(dataset_path, preset, device="cuda"):
         val_ds, batch_size=48, num_workers=4, prefetch_factor=2
     )
 
-    model = ScoreFlow(build_model(preset=preset), device=device)
+    model = ScoreFlow(preset, device=device)
     opt = torch.optim.AdamW(model.flow.parameters(), lr=3e-4, weight_decay=1e-5)
     train_step = partial(
         PatchFlow.stochastic_step,
@@ -296,16 +298,15 @@ def test_runner(device="cpu"):
     return scores
 
 
-def test_flow_runner(device="cpu", load_weights=None):
-    f = "doge.jpg"
-    # f = "goldfish.JPEG"
+def test_flow_runner(preset, device="cpu", load_weights=None):
+    # f = "doge.jpg"
+    f = "goldfish.JPEG"
     image = (PIL.Image.open(f)).resize((64, 64), PIL.Image.Resampling.LANCZOS)
     image = np.array(image)
     image = image.reshape(*image.shape[:2], -1).transpose(2, 0, 1)
     x = torch.from_numpy(image).unsqueeze(0).to(device)
-    model = build_model(device=device)
 
-    score_flow = ScoreFlow(scorenet=model, device=device)
+    score_flow = ScoreFlow(preset, device=device)
 
     if load_weights is not None:
         score_flow.flow.load_state_dict(torch.load(load_weights))
@@ -323,13 +324,35 @@ def test_flow_runner(device="cpu", load_weights=None):
     return
 
 
-if __name__ == "__main__":
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    preset = "edm2-img64-s-fid"
-    imagenette_path = "/GROND_STOR/amahmood/datasets/img64/"
+@click.command()
 
-    train_flow(imagenette_path, preset, device)
-    test_flow_runner("cuda", f"out/msma/{preset}/flow.pt")
+# Main options.
+@click.option('--run',             help='Which function to run',
+              type=click.Choice(['cache-scores', 'train-flow', 'train-gmm'], case_sensitive=False)
+)
+@click.option('--outdir',           help='Where to load/save the results', metavar='DIR',            type=str, required=True)
+@click.option('--preset',           help='Configuration preset', metavar='STR',                 type=str, default='edm2-img64-s-fid', show_default=True)
+@click.option('--data',             help='Path to the dataset', metavar='ZIP|DIR',              type=str, default=None)
+def cmdline(run, outdir, **opts):
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    preset = opts['preset']
+    dataset_path = opts['data']
+
+    if run in ['cache-scores', 'train-flow']:
+        assert opts['data'] is not None, "Provide path to dataset"
+
+    if run == "cache-scores":
+        cache_score_norms(preset=preset, dataset_path=dataset_path, outdir=outdir, device=device)
+
+    if run == "train-gmm":
+        train_gmm(
+            score_path=f"{outdir}/{preset}/imagenette_score_norms.pt",
+            outdir=f"{outdir}/{preset}",
+            grid_search=True,
+        )
+
+    # test_flow_runner("cuda", f"out/msma/{preset}/flow.pt")
+    # train_flow(imagenette_path, preset, device)
 
     # cache_score_norms(
     #     preset=preset,
@@ -344,3 +367,6 @@ if __name__ == "__main__":
     # s = s.to("cpu").numpy()
     # nll, pct = compute_gmm_likelihood(s, gmmdir=f"out/msma/{preset}/")
     # print(f"Anomaly score for image: {nll[0]:.3f} @ {pct*100:.2f} percentile")
+
+if __name__ == "__main__":
+    cmdline()

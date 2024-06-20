@@ -6,12 +6,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from msma import build_model, config_presets
+from msma import ScoreFlow, config_presets
 
 
 @cache
-def load_model(preset="edm2-img64-s-fid", device='cpu'):
-    return build_model(preset, device)
+def load_model(modeldir, preset="edm2-img64-s-fid", device='cpu', outdir=None):
+    model = ScoreFlow(preset, device=device)
+    model.flow.load_state_dict(torch.load(f"{modeldir}/{preset}/flow.pt"))
+    return model
 
 @cache
 def load_reference_scores(model_dir):
@@ -38,24 +40,42 @@ def plot_against_reference(nll, ref_nll):
     return fig
 
 
+def plot_heatmap(heatmap):
+    fig, ax = plt.subplots()
+    im = heatmap[0,0]
+    ax.imshow(im, cmap='gist_heat')
+    fig.tight_layout()
+    return fig
+
+# def compute_scores    
+
+
 def run_inference(img, preset="edm2-img64-s-fid", device="cuda"):
-    img = torch.from_numpy(img).permute(2,0,1).unsqueeze(0)
-    img = torch.nn.functional.interpolate(img, size=64, mode='bilinear')
-    model = load_model(preset=preset, device=device)
-    x = model(img.cuda())
-    x = x.square().sum(dim=(2, 3, 4)) ** 0.5
-    nll, pct, ref_nll = compute_gmm_likelihood(x.cpu(), model_dir=f"models/{preset}")
 
-    plot = plot_against_reference(nll, ref_nll)
-
+    with torch.inference_mode():
+        img = torch.from_numpy(img).permute(2,0,1).unsqueeze(0)
+        img = torch.nn.functional.interpolate(img, size=64, mode='bilinear')
+        img = img.to(device)
+        model = load_model(modeldir='models', preset=preset, device=device)
+        x = model.scorenet(img)
+        x = x.square().sum(dim=(2, 3, 4)) ** 0.5
+        img_likelihood = model(img).cpu().numpy()
+        nll, pct, ref_nll = compute_gmm_likelihood(x.cpu(), model_dir=f"models/{preset}")
+    
     outstr = f"Anomaly score: {nll:.3f} / {pct:.2f} percentile"
-    return outstr, plot
+    histplot = plot_against_reference(nll, ref_nll)
+    heatmapplot = plot_heatmap(img_likelihood)
+
+    return outstr, heatmapplot, histplot
 
 
 demo = gr.Interface(
     fn=run_inference,
     inputs=["image"],
-    outputs=["text", gr.Plot(label="Comparing to Imagenette")],
+    outputs=["text",
+             gr.Plot(label="Anomaly Heatmap"),
+             gr.Plot(label="Comparing to Imagenette"),
+            ],
 )
 
 if __name__ == "__main__":
