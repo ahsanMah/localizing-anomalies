@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from scorer import build_model, config_presets
+from msma import build_model, config_presets
 
 
 @cache
