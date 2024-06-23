@@ -12,6 +12,7 @@ from sklearn.model_selection import GridSearchCV
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from torch.utils.data import Subset
+from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 import dnnlib
@@ -213,7 +214,7 @@ def cache_score_norms(preset, dataset_path, outdir, device="cpu"):
     print(f"Computed score norms for {score_norms.shape[0]} samples")
 
 
-def train_flow(dataset_path, preset, outdir, device="cuda"):
+def train_flow(dataset_path, preset, outdir, epochs=10, device="cuda"):
     dsobj = ImageFolderDataset(path=dataset_path, resolution=64)
     refimg, reflabel = dsobj[0]
     print(f"Loaded {len(dsobj)} samples from {dataset_path}")
@@ -230,10 +231,10 @@ def train_flow(dataset_path, preset, outdir, device="cuda"):
     val_ds = Subset(dsobj, range(train_len, train_len + val_len))
 
     trainiter = torch.utils.data.DataLoader(
-        train_ds, batch_size=48, num_workers=4, prefetch_factor=2
+        train_ds, batch_size=64, num_workers=4, prefetch_factor=2
     )
     testiter = torch.utils.data.DataLoader(
-        val_ds, batch_size=48, num_workers=4, prefetch_factor=2
+        val_ds, batch_size=128, num_workers=4, prefetch_factor=2
     )
 
     model = ScoreFlow(preset, device=device)
@@ -243,48 +244,59 @@ def train_flow(dataset_path, preset, outdir, device="cuda"):
         flow_model=model.flow,
         opt=opt,
         train=True,
-        n_patches=64,
+        n_patches=128,
         device=device,
     )
     eval_step = partial(
         PatchFlow.stochastic_step,
         flow_model=model.flow,
         train=False,
-        n_patches=128,
+        n_patches=256,
         device=device,
     )
 
-    os.makedirs(f"{outdir}/{preset}", exist_ok=True)
-    pbar = tqdm(trainiter, desc="Train Loss: ? - Val Loss: ?")
+    experiment_dir = f"{outdir}/{preset}"
+    os.makedirs(experiment_dir, exist_ok=True)
+    writer = SummaryWriter(f"{experiment_dir}/logs/")
+
+    # totaliters = int(epochs * train_len)
+    pbar = tqdm(range(epochs), desc="Train Loss: ? - Val Loss: ?")
     step = 0
 
-    for x, _ in tqdm(trainiter):
-        x = x.to(device)
-        scores = model.scorenet(x)
+    for e in pbar:
+        for x, _ in trainiter:
+            x = x.to(device)
+            scores = model.scorenet(x)
 
-        if step == 0:
-            with torch.inference_mode():
-                val_loss = eval_step(scores, x)
+            if step == 0:
+                with torch.inference_mode():
+                    val_loss = eval_step(scores, x)
 
-        train_loss = train_step(scores, x)
+            train_loss = train_step(scores, x)
 
-        if (step + 1) % 10 == 0:
-
-            with torch.inference_mode():
+            if (step + 1) % 10 == 0:
+                prev_val_loss = val_loss
                 val_loss = 0.0
-                for i, (x, _) in enumerate(testiter):
-                    x = x.to(device)
-                    scores = model.scorenet(x)
-                    val_loss += eval_step(scores, x)
-                    break
-                val_loss /= i + 1
+                with torch.inference_mode():
+                    for i, (x, _) in enumerate(testiter):
+                        x = x.to(device)
+                        scores = model.scorenet(x)
+                        val_loss += eval_step(scores, x)
+                        break
+                    val_loss /= i + 1
+                    writer.add_scalar("loss/val", train_loss, step)
 
-        pbar.set_description(
-            f"Step: {step:d} - Train: {train_loss:.3f} - Val: {val_loss:.3f}"
-        )
-        step += 1
-    
-    torch.save(model.flow.state_dict(), f"{outdir}/{preset}/flow.pt")
+                if val_loss < prev_val_loss:
+                    torch.save(model.flow.state_dict(), f"{experiment_dir}/flow.pt")
+
+            writer.add_scalar("loss/train", train_loss, step)
+            pbar.set_description(
+                f"Step: {step:d} - Train: {train_loss:.3f} - Val: {val_loss:.3f}"
+            )
+            step += 1
+
+    # torch.save(model.flow.state_dict(), f"{experiment_dir}/flow.pt")
+    writer.close()
 
 
 @torch.inference_mode

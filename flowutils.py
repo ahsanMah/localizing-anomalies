@@ -25,6 +25,13 @@ def build_flows(
         flows += [nf.flows.LULinearPermute(latent_size)]
 
     # Set base distribution
+
+    # context_encoder = nn.Sequential([
+    #     nn.Linear(context_size, context_size),
+    #     nn.SiLU(),
+    #     nn.Linear(context_size, context_size)
+    # ])
+
     q0 = nf.distributions.DiagGaussian(latent_size, trainable=True)
 
     # Construct flow model
