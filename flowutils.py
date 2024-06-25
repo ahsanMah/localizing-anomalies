@@ -5,6 +5,61 @@ import numpy as np
 import torch
 import torch.nn as nn
 from einops import rearrange, repeat
+from normflows.distributions import BaseDistribution
+
+
+class ConditionalDiagGaussian(BaseDistribution):
+    """
+    Conditional multivariate Gaussian distribution with diagonal
+    covariance matrix, parameters are obtained by a context encoder,
+    context meaning the variable to condition on
+    """
+
+    def __init__(self, shape, context_encoder):
+        """Constructor
+
+        Args:
+          shape: Tuple with shape of data, if int shape has one dimension
+          context_encoder: Computes mean and log of the standard deviation
+          of the Gaussian, mean is the first half of the last dimension
+          of the encoder output, log of the standard deviation the second
+          half
+        """
+        super().__init__()
+        if isinstance(shape, int):
+            shape = (shape,)
+        if isinstance(shape, list):
+            shape = tuple(shape)
+        self.shape = shape
+        self.n_dim = len(shape)
+        self.d = np.prod(shape)
+        self.context_encoder = context_encoder
+
+    def forward(self, num_samples=1, context=None):
+        encoder_output = self.context_encoder(context)
+        split_ind = encoder_output.shape[-1] // 2
+        mean = encoder_output[..., :split_ind]
+        log_scale = encoder_output[..., split_ind:]
+        eps = torch.randn(
+            (num_samples,) + self.shape, dtype=mean.dtype, device=mean.device
+        )
+        z = mean + torch.exp(log_scale) * eps
+        log_p = -0.5 * self.d * np.log(2 * np.pi) - torch.sum(
+            log_scale + 0.5 * torch.pow(eps, 2), list(range(1, self.n_dim + 1))
+        )
+        return z, log_p
+
+    def log_prob(self, z, context=None):
+        encoder_output = self.context_encoder(context)
+        split_ind = encoder_output.shape[-1] // 2
+        mean = encoder_output[..., :split_ind]
+        log_scale = encoder_output[..., split_ind:]
+        log_p = -0.5 * self.d * np.log(2 * np.pi) - torch.sum(
+            log_scale + 0.5 * torch.pow((z - mean) / torch.exp(log_scale), 2),
+            list(range(1, self.n_dim + 1)),
+        )
+        return log_p
+
 
 
 def build_flows(
@@ -26,13 +81,14 @@ def build_flows(
 
     # Set base distribution
 
-    # context_encoder = nn.Sequential([
-    #     nn.Linear(context_size, context_size),
-    #     nn.SiLU(),
-    #     nn.Linear(context_size, context_size)
-    # ])
+    context_encoder = nn.Sequential(
+        nn.Linear(context_size, context_size),
+        nn.SiLU(),
+        # output mean and scales for K=latent_size dimensions
+        nn.Linear(context_size, latent_size * 2)
+    )
 
-    q0 = nf.distributions.DiagGaussian(latent_size, trainable=True)
+    q0 = ConditionalDiagGaussian(latent_size, context_encoder)
 
     # Construct flow model
     model = nf.ConditionalNormalizingFlow(q0, flows)
@@ -239,7 +295,7 @@ class PatchFlow(torch.nn.Module):
             context=context_vector,
         )
 
-        loss = -torch.mean(flow_model.flow.q0.log_prob(z) + ldj)
+        loss = -torch.mean(flow_model.flow.q0.log_prob(z, context_vector) + ldj)
         loss *= n_patches
 
         if train:
