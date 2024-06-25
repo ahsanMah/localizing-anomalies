@@ -61,18 +61,27 @@ class ConditionalDiagGaussian(BaseDistribution):
         return log_p
 
 
-
 def build_flows(
-    latent_size, num_flows=4, num_blocks=2, hidden_units=128, context_size=64
+    latent_size, num_flows=4, num_blocks_per_flow=2, hidden_units=128, context_size=64
 ):
     # Define flows
 
     flows = []
+
+    flows.append(
+        nf.flows.MaskedAffineAutoregressive(
+            latent_size,
+            hidden_features=hidden_units,
+            num_blocks=num_blocks_per_flow,
+            context_features=context_size,
+        )
+    )
+
     for i in range(num_flows):
         flows += [
             nf.flows.CoupledRationalQuadraticSpline(
                 latent_size,
-                num_blocks=num_blocks,
+                num_blocks=num_blocks_per_flow,
                 num_hidden_channels=hidden_units,
                 num_context_channels=context_size,
             )
@@ -85,7 +94,7 @@ def build_flows(
         nn.Linear(context_size, context_size),
         nn.SiLU(),
         # output mean and scales for K=latent_size dimensions
-        nn.Linear(context_size, latent_size * 2)
+        nn.Linear(context_size, latent_size * 2),
     )
 
     q0 = ConditionalDiagGaussian(latent_size, context_encoder)
@@ -190,7 +199,8 @@ class PatchFlow(torch.nn.Module):
         input_size,
         patch_size=3,
         context_embedding_size=128,
-        num_blocks=2,
+        num_flows=4,
+        num_blocks_per_flow=2,
         hidden_units=128,
     ):
         super().__init__()
@@ -198,8 +208,12 @@ class PatchFlow(torch.nn.Module):
         self.local_pooler = SpatialNormer(
             in_channels=num_sigmas, kernel_size=patch_size
         )
-        self.flow = build_flows(
-            latent_size=num_sigmas, context_size=context_embedding_size
+        self.flows = build_flows(
+            latent_size=num_sigmas,
+            context_size=context_embedding_size,
+            num_flows=num_flows,
+            num_blocks_per_flow=num_blocks_per_flow,
+            hidden_units=hidden_units,
         )
         self.position_encoding = PositionalEncoding2D(channels=context_embedding_size)
 
@@ -213,7 +227,7 @@ class PatchFlow(torch.nn.Module):
     def init_weights(self):
         # Initialize weights with Xavier
         linear_modules = list(
-            filter(lambda m: isinstance(m, nn.Linear), self.flow.modules())
+            filter(lambda m: isinstance(m, nn.Linear), self.flows.modules())
         )
         total = len(linear_modules)
 
@@ -252,12 +266,10 @@ class PatchFlow(torch.nn.Module):
             p = rearrange(p, "n b c -> (n b) c")
 
             # Compute log densities for each patch
-            logpx = self.flow.log_prob(p, context=ctx)
+            logpx = self.flows.log_prob(p, context=ctx)
             logpx = rearrange(logpx, "(n b) -> n b", n=n, b=b)
             patch_logpx.append(logpx)
-            # del ctx, p
 
-        # print(p[:4], ctx[:4], logpx)
         # Convert back to image
         logpx = torch.cat(patch_logpx, dim=0)
         logpx = rearrange(logpx, "(h w) b -> b 1 h w", b=b, h=new_h, w=new_w)
@@ -290,12 +302,12 @@ class PatchFlow(torch.nn.Module):
         # # Concatenate global context to local context
         # context_vector = torch.cat([context_vector, gctx], dim=1)
 
-        z, ldj = flow_model.flow.inverse_and_log_det(
-            patch_feature,
-            context=context_vector,
-        )
+        # z, ldj = flow_model.flows.inverse_and_log_det(
+        #     patch_feature,
+        #     context=context_vector,
+        # )
 
-        loss = -torch.mean(flow_model.flow.q0.log_prob(z, context_vector) + ldj)
+        loss = flow_model.flows.forward_kld(patch_feature, context_vector)
         loss *= n_patches
 
         if train:
