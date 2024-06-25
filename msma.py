@@ -3,6 +3,7 @@ import os
 import pickle
 from functools import partial
 from pickle import dump, load
+from typing import Literal
 
 import click
 import numpy as np
@@ -20,6 +21,7 @@ import dnnlib
 from dataset import ImageFolderDataset
 from flowutils import PatchFlow
 
+DEVICE: Literal["cuda", "cpu"] = 'cpu'
 model_root = "https://nvlabs-fi-cdn.nvidia.com/edm2/posthoc-reconstructions"
 
 config_presets = {
@@ -100,6 +102,7 @@ class ScoreFlow(torch.nn.Module):
         self,
         preset,
         device="cpu",
+        **flow_kwargs
     ):
         super().__init__()
 
@@ -107,7 +110,7 @@ class ScoreFlow(torch.nn.Module):
         h = w = scorenet.net.img_resolution
         c = scorenet.net.img_channels
         num_sigmas = len(scorenet.sigma_steps)
-        self.flow = PatchFlow((num_sigmas, c, h, w))
+        self.flow = PatchFlow((num_sigmas, c, h, w), **flow_kwargs)
 
         self.flow = self.flow.to(device)
         self.scorenet = scorenet.to(device).requires_grad_(False)
@@ -187,120 +190,6 @@ def compute_gmm_likelihood(x_score, gmmdir):
     return nll, percentile
 
 
-def cache_score_norms(preset, dataset_path, outdir, device="cpu"):
-    dsobj = ImageFolderDataset(path=dataset_path, resolution=64)
-    refimg, reflabel = dsobj[0]
-    print(f"Loading dataset from {dataset_path}")
-    print(
-        f"Number of Samples: {len(dsobj)} - shape: {refimg.shape}, dtype: {refimg.dtype}, labels {reflabel}"
-    )
-    dsloader = torch.utils.data.DataLoader(
-        dsobj, batch_size=64, num_workers=4, prefetch_factor=2
-    )
-
-    model = build_model(preset=preset, device=device)
-    score_norms = []
-
-    for x, _ in tqdm(dsloader):
-        s = model(x.to(device))
-        s = s.square().sum(dim=(2, 3, 4)) ** 0.5
-        score_norms.append(s.cpu())
-
-    score_norms = torch.cat(score_norms, dim=0)
-
-    os.makedirs(f"{outdir}/{preset}/", exist_ok=True)
-    with open(f"{outdir}/{preset}/imagenette_score_norms.pt", "wb") as f:
-        torch.save(score_norms, f)
-
-    print(f"Computed score norms for {score_norms.shape[0]} samples")
-
-
-def train_flow(dataset_path, preset, outdir, epochs=10, device="cuda"):
-    dsobj = ImageFolderDataset(path=dataset_path, resolution=64)
-    refimg, reflabel = dsobj[0]
-    print(f"Loaded {len(dsobj)} samples from {dataset_path}")
-
-    # Subset of training dataset
-    val_ratio = 0.1
-    train_len = int((1 - val_ratio) * len(dsobj))
-    val_len = len(dsobj) - train_len
-
-    print(
-        f"Generating train/test split with ratio={val_ratio} -> {train_len}/{val_len}..."
-    )
-    train_ds = Subset(dsobj, range(train_len))
-    val_ds = Subset(dsobj, range(train_len, train_len + val_len))
-
-    trainiter = torch.utils.data.DataLoader(
-        train_ds, batch_size=64, num_workers=4, prefetch_factor=2
-    )
-    testiter = torch.utils.data.DataLoader(
-        val_ds, batch_size=128, num_workers=4, prefetch_factor=2
-    )
-
-    model = ScoreFlow(preset, device=device)
-    opt = torch.optim.AdamW(model.flow.parameters(), lr=3e-4, weight_decay=1e-5)
-    train_step = partial(
-        PatchFlow.stochastic_step,
-        flow_model=model.flow,
-        opt=opt,
-        train=True,
-        n_patches=128,
-        device=device,
-    )
-    eval_step = partial(
-        PatchFlow.stochastic_step,
-        flow_model=model.flow,
-        train=False,
-        n_patches=256,
-        device=device,
-    )
-
-    experiment_dir = f"{outdir}/{preset}"
-    os.makedirs(experiment_dir, exist_ok=True)
-    timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M")
-    writer = SummaryWriter(f"{experiment_dir}/logs/{timestamp}")
-
-    # totaliters = int(epochs * train_len)
-    pbar = tqdm(range(epochs), desc="Train Loss: ? - Val Loss: ?")
-    step = 0
-
-    for e in pbar:
-        for x, _ in trainiter:
-            x = x.to(device)
-            scores = model.scorenet(x)
-
-            if step == 0:
-                with torch.inference_mode():
-                    val_loss = eval_step(scores, x)
-
-            train_loss = train_step(scores, x)
-
-            if (step + 1) % 10 == 0:
-                prev_val_loss = val_loss
-                val_loss = 0.0
-                with torch.inference_mode():
-                    for i, (x, _) in enumerate(testiter):
-                        x = x.to(device)
-                        scores = model.scorenet(x)
-                        val_loss += eval_step(scores, x)
-                        break
-                    val_loss /= i + 1
-                    writer.add_scalar("loss/val", train_loss, step)
-
-                if val_loss < prev_val_loss:
-                    torch.save(model.flow.state_dict(), f"{experiment_dir}/flow.pt")
-
-            writer.add_scalar("loss/train", train_loss, step)
-            pbar.set_description(
-                f"Step: {step:d} - Train: {train_loss:.3f} - Val: {val_loss:.3f}"
-            )
-            step += 1
-
-    # torch.save(model.flow.state_dict(), f"{experiment_dir}/flow.pt")
-    writer.close()
-
-
 @torch.inference_mode
 def test_runner(device="cpu"):
     # f = "doge.jpg"
@@ -341,15 +230,72 @@ def test_flow_runner(preset, device="cpu", load_weights=None):
     return
 
 
-@click.command()
+@click.group()
+def cmdline():
+    global DEVICE
+    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-# Main options.
+
+@cmdline.command(name="cache-scores")
 @click.option(
-    "--run",
-    help="Which function to run",
-    type=click.Choice(
-        ["cache-scores", "train-flow", "train-gmm"], case_sensitive=False
-    ),
+    "--preset",
+    help="Configuration preset",
+    metavar="STR",
+    type=str,
+    default="edm2-img64-s-fid",
+    show_default=True,
+)
+@click.option(
+    "--dataset_path",
+    help="Path to the dataset",
+    metavar="ZIP|DIR",
+    type=str,
+    default=None,
+)
+@click.option(
+    "--outdir",
+    help="Where to load/save the results",
+    metavar="DIR",
+    type=str,
+    required=True,
+)
+
+def cache_score_norms(preset, dataset_path, outdir):
+    device = DEVICE
+    dsobj = ImageFolderDataset(path=dataset_path, resolution=64)
+    refimg, reflabel = dsobj[0]
+    print(f"Loading dataset from {dataset_path}")
+    print(
+        f"Number of Samples: {len(dsobj)} - shape: {refimg.shape}, dtype: {refimg.dtype}, labels {reflabel}"
+    )
+    dsloader = torch.utils.data.DataLoader(
+        dsobj, batch_size=64, num_workers=4, prefetch_factor=2
+    )
+
+    model = build_model(preset=preset, device=device)
+    score_norms = []
+
+    for x, _ in tqdm(dsloader):
+        s = model(x.to(device))
+        s = s.square().sum(dim=(2, 3, 4)) ** 0.5
+        score_norms.append(s.cpu())
+
+    score_norms = torch.cat(score_norms, dim=0)
+
+    os.makedirs(f"{outdir}/{preset}/", exist_ok=True)
+    with open(f"{outdir}/{preset}/imagenette_score_norms.pt", "wb") as f:
+        torch.save(score_norms, f)
+
+    print(f"Computed score norms for {score_norms.shape[0]} samples")
+
+
+@cmdline.command(name="train-flow")
+@click.option(
+    "--dataset_path",
+    help="Path to the dataset",
+    metavar="ZIP|DIR",
+    type=str,
+    default=None,
 )
 @click.option(
     "--outdir",
@@ -367,47 +313,131 @@ def test_flow_runner(preset, device="cpu", load_weights=None):
     show_default=True,
 )
 @click.option(
-    "--data", help="Path to the dataset", metavar="ZIP|DIR", type=str, default=None
+    "--num_flows",
+    help="Number of normalizing flow functions in the PatchFlow model",
+    metavar="INT",
+    type=int,
+    default=4,
+    show_default=True,
 )
-def cmdline(run, outdir, **opts):
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    preset = opts["preset"]
-    dataset_path = opts["data"]
+def train_flow(dataset_path, preset, outdir, epochs=10, **flow_kwargs):
+    print("using device:", DEVICE)
+    device = DEVICE
+    dsobj = ImageFolderDataset(path=dataset_path, resolution=64)
+    refimg, reflabel = dsobj[0]
+    print(f"Loaded {len(dsobj)} samples from {dataset_path}")
 
-    if run in ["cache-scores", "train-flow"]:
-        assert opts["data"] is not None, "Provide path to dataset"
-    
-    if run == "cache-scores":
-        cache_score_norms(
-            preset=preset, dataset_path=dataset_path, outdir=outdir, device=device
+    # Subset of training dataset
+    val_ratio = 0.1
+    train_len = int((1 - val_ratio) * len(dsobj))
+    val_len = len(dsobj) - train_len
+
+    print(
+        f"Generating train/test split with ratio={val_ratio} -> {train_len}/{val_len}..."
+    )
+    train_ds = Subset(dsobj, range(train_len))
+    val_ds = Subset(dsobj, range(train_len, train_len + val_len))
+
+    trainiter = torch.utils.data.DataLoader(
+        train_ds, batch_size=64, num_workers=4, prefetch_factor=2
+    )
+    testiter = torch.utils.data.DataLoader(
+        val_ds, batch_size=128, num_workers=4, prefetch_factor=2
+    )
+
+    model = ScoreFlow(preset, device=device, **flow_kwargs)
+    opt = torch.optim.AdamW(model.flow.parameters(), lr=3e-4, weight_decay=1e-5)
+    train_step = partial(
+        PatchFlow.stochastic_step,
+        flow_model=model.flow,
+        opt=opt,
+        train=True,
+        n_patches=128,
+        device=device,
+    )
+    eval_step = partial(
+        PatchFlow.stochastic_step,
+        flow_model=model.flow,
+        train=False,
+        n_patches=256,
+        device=device,
+    )
+
+    experiment_dir = f"{outdir}/{preset}"
+    os.makedirs(experiment_dir, exist_ok=True)
+    timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M")
+    writer = SummaryWriter(f"{experiment_dir}/logs/{timestamp}")
+
+    # totaliters = int(epochs * train_len)
+    pbar = tqdm(range(epochs), desc="Train Loss: ? - Val Loss: ?")
+    step = 0
+
+    for e in pbar:
+        for x, _ in trainiter:
+            x = x.to(device)
+            scores = model.scorenet(x)
+
+            if step == 0:
+                with torch.inference_mode():
+                    val_loss = eval_step(scores, x)
+
+                # Log details about model
+                writer.add_graph(model.flow.flows, (torch.zeros(1, scores.shape[1], device=device),
+                                                    torch.zeros(1, model.flow.position_encoding.cached_penc.shape[-1], device=device)))
+
+            train_loss = train_step(scores, x)
+
+            if (step + 1) % 10 == 0:
+                prev_val_loss = val_loss
+                val_loss = 0.0
+                with torch.inference_mode():
+                    for i, (x, _) in enumerate(testiter):
+                        x = x.to(device)
+                        scores = model.scorenet(x)
+                        val_loss += eval_step(scores, x)
+                        break
+                    val_loss /= i + 1
+                    writer.add_scalar("loss/val", train_loss, step)
+
+                if val_loss < prev_val_loss:
+                    torch.save(model.flow.state_dict(), f"{experiment_dir}/flow.pt")
+
+            writer.add_scalar("loss/train", train_loss, step)
+            pbar.set_description(
+                f"Step: {step:d} - Train: {train_loss:.3f} - Val: {val_loss:.3f}"
+            )
+            step += 1
+
+    # Squeeze the juice
+    best_ckpt = torch.load(f"{experiment_dir}/flow.pt")
+    model.flow.load_state_dict(best_ckpt)
+    for i, (x, _) in enumerate(testiter):
+        x = x.to(device)
+        scores = model.scorenet(x)
+        train_loss = train_step(scores, x)
+        writer.add_scalar("loss/train", train_loss, step)
+        pbar.set_description(
+            f"(Tuning) Step: {step:d} - Train: {train_loss:.3f} - Val: {val_loss:.3f}"
         )
+        step += 1
 
-    if run == "train-gmm":
-        train_gmm(
-            score_path=f"{outdir}/{preset}/imagenette_score_norms.pt",
-            outdir=f"{outdir}/{preset}",
-            grid_search=True,
-        )
-    
-    if run == "train-flow":
-        train_flow(dataset_path, outdir=outdir, preset=preset, device=device)
-        test_flow_runner(preset, device=device, load_weights=f"{outdir}/{preset}/flow.pt")
+    torch.save(model.flow.state_dict(), f"{experiment_dir}/flow.pt")
+    writer.close()
 
-    # train_flow(imagenette_path, preset, device)
 
-    # cache_score_norms(
-    #     preset=preset,
-    #     dataset_path="/GROND_STOR/amahmood/datasets/img64/",
-    #     device="cuda",
-    # )
-    # train_gmm(
-    #     f"out/msma/{preset}_imagenette_score_norms.pt", outdir=f"out/msma/{preset}"
-    # )
-    # s = test_runner(device=device)
-    # s = s.square().sum(dim=(2, 3, 4)) ** 0.5
-    # s = s.to("cpu").numpy()
-    # nll, pct = compute_gmm_likelihood(s, gmmdir=f"out/msma/{preset}/")
-    # print(f"Anomaly score for image: {nll[0]:.3f} @ {pct*100:.2f} percentile")
+# cache_score_norms(
+#     preset=preset,
+#     dataset_path="/GROND_STOR/amahmood/datasets/img64/",
+#     device="cuda",
+# )
+# train_gmm(
+#     f"out/msma/{preset}_imagenette_score_norms.pt", outdir=f"out/msma/{preset}"
+# )
+# s = test_runner(device=device)
+# s = s.square().sum(dim=(2, 3, 4)) ** 0.5
+# s = s.to("cpu").numpy()
+# nll, pct = compute_gmm_likelihood(s, gmmdir=f"out/msma/{preset}/")
+# print(f"Anomaly score for image: {nll[0]:.3f} @ {pct*100:.2f} percentile")
 
 
 if __name__ == "__main__":
