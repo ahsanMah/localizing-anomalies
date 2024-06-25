@@ -1,3 +1,4 @@
+import datetime
 import os
 import pickle
 from functools import partial
@@ -194,7 +195,7 @@ def cache_score_norms(preset, dataset_path, outdir, device="cpu"):
         f"Number of Samples: {len(dsobj)} - shape: {refimg.shape}, dtype: {refimg.dtype}, labels {reflabel}"
     )
     dsloader = torch.utils.data.DataLoader(
-        dsobj, batch_size=48, num_workers=4, prefetch_factor=2
+        dsobj, batch_size=64, num_workers=4, prefetch_factor=2
     )
 
     model = build_model(preset=preset, device=device)
@@ -257,7 +258,8 @@ def train_flow(dataset_path, preset, outdir, epochs=10, device="cuda"):
 
     experiment_dir = f"{outdir}/{preset}"
     os.makedirs(experiment_dir, exist_ok=True)
-    writer = SummaryWriter(f"{experiment_dir}/logs/")
+    timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M")
+    writer = SummaryWriter(f"{experiment_dir}/logs/{timestamp}")
 
     # totaliters = int(epochs * train_len)
     pbar = tqdm(range(epochs), desc="Train Loss: ? - Val Loss: ?")
