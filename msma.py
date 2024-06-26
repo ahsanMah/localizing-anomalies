@@ -2,7 +2,7 @@ import datetime
 import json
 import os
 import pickle
-from functools import partial
+from functools import partial, wraps
 from pickle import dump, load
 from typing import Literal
 
@@ -135,50 +135,6 @@ def quantile_scorer(gmm, X, y=None):
     return np.quantile(gmm.score_samples(X), 0.1)
 
 
-def train_gmm(score_path, outdir, grid_search=False):
-    X = torch.load(score_path)
-
-    gm = GaussianMixture(
-        n_components=7, init_params="kmeans", covariance_type="full", max_iter=100000
-    )
-    clf = Pipeline([("scaler", StandardScaler()), ("GMM", gm)])
-
-    if grid_search:
-        param_grid = dict(
-            GMM__n_components=range(2, 11, 1),
-        )
-
-        grid = GridSearchCV(
-            estimator=clf,
-            param_grid=param_grid,
-            cv=5,
-            n_jobs=2,
-            verbose=1,
-            scoring=quantile_scorer,
-        )
-
-        grid_result = grid.fit(X)
-
-        print("Best: %f using %s" % (grid_result.best_score_, grid_result.best_params_))
-        print("-----" * 15)
-        means = grid_result.cv_results_["mean_test_score"]
-        stds = grid_result.cv_results_["std_test_score"]
-        params = grid_result.cv_results_["params"]
-        for mean, stdev, param in zip(means, stds, params):
-            print("%f (%f) with: %r" % (mean, stdev, param))
-        clf = grid.best_estimator_
-
-    clf.fit(X)
-    inlier_nll = -clf.score_samples(X)
-
-    os.makedirs(outdir, exist_ok=True)
-    with open(f"{outdir}/refscores.npz", "wb") as f:
-        np.savez_compressed(f, inlier_nll)
-
-    with open(f"{outdir}/gmm.pkl", "wb") as f:
-        dump(clf, f, protocol=5)
-
-
 def compute_gmm_likelihood(x_score, gmmdir):
     with open(f"{gmmdir}/gmm.pkl", "rb") as f:
         clf = load(f)
@@ -237,8 +193,9 @@ def cmdline():
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
-@cmdline.command(name="cache-scores")
-@click.option(
+def common_args(func):
+    @wraps(func)
+    @click.option(
     "--preset",
     help="Configuration preset",
     metavar="STR",
@@ -246,20 +203,73 @@ def cmdline():
     default="edm2-img64-s-fid",
     show_default=True,
 )
-@click.option(
-    "--dataset_path",
-    help="Path to the dataset",
-    metavar="ZIP|DIR",
-    type=str,
-    default=None,
-)
-@click.option(
-    "--outdir",
-    help="Where to load/save the results",
-    metavar="DIR",
-    type=str,
-    required=True,
-)
+    @click.option(
+        "--dataset_path",
+        help="Path to the dataset",
+        metavar="ZIP|DIR",
+        type=str,
+        default=None,
+    )
+    @click.option(
+        "--outdir",
+        help="Where to load/save the results",
+        metavar="DIR",
+        type=str,
+        required=True,
+    )
+    def wrapper(*args, **kwargs):
+        return func(*args, **kwargs)
+
+    return wrapper
+
+@cmdline.command('train-gmm')
+@common_args
+def train_gmm(score_path, outdir, grid_search=False):
+    X = torch.load(score_path)
+
+    gm = GaussianMixture(
+        n_components=7, init_params="kmeans", covariance_type="full", max_iter=100000
+    )
+    clf = Pipeline([("scaler", StandardScaler()), ("GMM", gm)])
+
+    if grid_search:
+        param_grid = dict(
+            GMM__n_components=range(2, 11, 1),
+        )
+
+        grid = GridSearchCV(
+            estimator=clf,
+            param_grid=param_grid,
+            cv=5,
+            n_jobs=2,
+            verbose=1,
+            scoring=quantile_scorer,
+        )
+
+        grid_result = grid.fit(X)
+
+        print("Best: %f using %s" % (grid_result.best_score_, grid_result.best_params_))
+        print("-----" * 15)
+        means = grid_result.cv_results_["mean_test_score"]
+        stds = grid_result.cv_results_["std_test_score"]
+        params = grid_result.cv_results_["params"]
+        for mean, stdev, param in zip(means, stds, params):
+            print("%f (%f) with: %r" % (mean, stdev, param))
+        clf = grid.best_estimator_
+
+    clf.fit(X)
+    inlier_nll = -clf.score_samples(X)
+
+    os.makedirs(outdir, exist_ok=True)
+    with open(f"{outdir}/refscores.npz", "wb") as f:
+        np.savez_compressed(f, inlier_nll)
+
+    with open(f"{outdir}/gmm.pkl", "wb") as f:
+        dump(clf, f, protocol=5)
+
+
+@cmdline.command(name="cache-scores")
+@common_args
 def cache_score_norms(preset, dataset_path, outdir):
     device = DEVICE
     dsobj = ImageFolderDataset(path=dataset_path, resolution=64)
@@ -291,28 +301,6 @@ def cache_score_norms(preset, dataset_path, outdir):
 
 @cmdline.command(name="train-flow")
 @click.option(
-    "--dataset_path",
-    help="Path to the dataset",
-    metavar="ZIP|DIR",
-    type=str,
-    default=None,
-)
-@click.option(
-    "--outdir",
-    help="Where to load/save the results",
-    metavar="DIR",
-    type=str,
-    required=True,
-)
-@click.option(
-    "--preset",
-    help="Configuration preset",
-    metavar="STR",
-    type=str,
-    default="edm2-img64-s-fid",
-    show_default=True,
-)
-@click.option(
     "--epochs",
     help="Number of epochs",
     metavar="INT",
@@ -328,6 +316,7 @@ def cache_score_norms(preset, dataset_path, outdir):
     default=4,
     show_default=True,
 )
+@common_args
 def train_flow(dataset_path, preset, outdir, epochs, **flow_kwargs):
     print("using device:", DEVICE)
     device = DEVICE
