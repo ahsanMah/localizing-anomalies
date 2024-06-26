@@ -1,4 +1,5 @@
 import datetime
+import json
 import os
 import pickle
 from functools import partial
@@ -21,7 +22,7 @@ import dnnlib
 from dataset import ImageFolderDataset
 from flowutils import PatchFlow, sanitize_locals
 
-DEVICE: Literal["cuda", "cpu"] = 'cpu'
+DEVICE: Literal["cuda", "cpu"] = "cpu"
 model_root = "https://nvlabs-fi-cdn.nvidia.com/edm2/posthoc-reconstructions"
 
 config_presets = {
@@ -56,8 +57,8 @@ class EDMScorer(torch.nn.Module):
     ):
         super().__init__()
 
-        self.config = sanitize_locals(locals(), ignore_keys='net')
-        self.config['EDMNet'] = dict(net.init_kwargs)
+        self.config = sanitize_locals(locals(), ignore_keys="net")
+        self.config["EDMNet"] = dict(net.init_kwargs)
 
         self.use_fp16 = use_fp16
         self.sigma_min = sigma_min
@@ -100,19 +101,13 @@ class EDMScorer(torch.nn.Module):
 
 
 class ScoreFlow(torch.nn.Module):
-    def __init__(
-        self,
-        scorenet,
-        device="cpu",
-        **flow_kwargs
-    ):
+    def __init__(self, scorenet, device="cpu", **flow_kwargs):
         super().__init__()
 
         h = w = scorenet.net.img_resolution
         c = scorenet.net.img_channels
         num_sigmas = len(scorenet.sigma_steps)
         self.flow = PatchFlow((num_sigmas, c, h, w), **flow_kwargs)
-        
 
         self.flow = self.flow.to(device)
         self.scorenet = scorenet.to(device).requires_grad_(False)
@@ -265,7 +260,6 @@ def cmdline():
     type=str,
     required=True,
 )
-
 def cache_score_norms(preset, dataset_path, outdir):
     device = DEVICE
     dsobj = ImageFolderDataset(path=dataset_path, resolution=64)
@@ -353,7 +347,7 @@ def train_flow(dataset_path, preset, outdir, epochs, **flow_kwargs):
     val_ds = Subset(dsobj, range(train_len, train_len + val_len))
 
     trainiter = torch.utils.data.DataLoader(
-        train_ds, batch_size=64, num_workers=4, prefetch_factor=2
+        train_ds, batch_size=64, num_workers=4, prefetch_factor=2, shuffle=True
     )
     testiter = torch.utils.data.DataLoader(
         val_ds, batch_size=128, num_workers=4, prefetch_factor=2
@@ -383,6 +377,9 @@ def train_flow(dataset_path, preset, outdir, epochs, **flow_kwargs):
     timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M")
     writer = SummaryWriter(f"{experiment_dir}/logs/{timestamp}")
 
+    with open(f"{experiment_dir}/logs/{timestamp}/config.json", "w") as f: 
+        json.dump(model.config, f, sort_keys=True, indent=4)
+
     # totaliters = int(epochs * train_len)
     pbar = tqdm(range(epochs), desc="Train Loss: ? - Val Loss: ?")
     step = 0
@@ -398,8 +395,17 @@ def train_flow(dataset_path, preset, outdir, epochs, **flow_kwargs):
                     val_loss = eval_step(scores, x)
 
                 # Log details about model
-                writer.add_graph(model.flow.flows, (torch.zeros(1, scores.shape[1], device=device),
-                                                    torch.zeros(1, model.flow.position_encoding.cached_penc.shape[-1], device=device)))
+                writer.add_graph(
+                    model.flow.flows,
+                    (
+                        torch.zeros(1, scores.shape[1], device=device),
+                        torch.zeros(
+                            1,
+                            model.flow.position_encoding.cached_penc.shape[-1],
+                            device=device,
+                        ),
+                    ),
+                )
 
             train_loss = train_step(scores, x)
 
@@ -433,12 +439,14 @@ def train_flow(dataset_path, preset, outdir, epochs, **flow_kwargs):
         scores = model.scorenet(x)
         train_loss = train_step(scores, x)
         writer.add_scalar("loss/train", train_loss, step)
-        pbar.set_description(
-            f"(Tuning) Step: {step:d} - Loss: {train_loss:.3f}"
-        )
+        pbar.set_description(f"(Tuning) Step: {step:d} - Loss: {train_loss:.3f}")
         step += 1
 
+    # Save final model
     torch.save(model.flow.state_dict(), f"{experiment_dir}/flow.pt")
+    with open(f"{experiment_dir}/config.json", "w") as f: 
+        json.dump(model.config, f, sort_keys=True, indent=4)
+    
     writer.close()
 
 

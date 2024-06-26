@@ -221,7 +221,7 @@ class PatchFlow(torch.nn.Module):
     ):
         super().__init__()
 
-        self.config = sanitize_locals(locals(), ignore_keys=input_size)
+        self.config = sanitize_locals(locals(), ignore_keys="input_size")
 
         num_sigmas, c, h, w = input_size
         self.local_pooler = SpatialNormer(
