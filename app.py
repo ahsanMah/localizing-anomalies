@@ -1,3 +1,4 @@
+import json
 from functools import cache
 from pickle import load
 
@@ -6,14 +7,42 @@ import matplotlib.pyplot as plt
 import numpy as np
 import PIL.Image as Image
 import torch
+from huggingface_hub import hf_hub_download
+from safetensors.torch import load_file
 
-from msma import ScoreFlow, config_presets
+from msma import ScoreFlow, build_model_from_pickle, config_presets
 
 
 @cache
-def load_model(modeldir, preset="edm2-img64-s-fid", device="cpu", outdir=None):
-    model = ScoreFlow(preset, device=device)
-    model.flow.load_state_dict(torch.load(f"{modeldir}/{preset}/flow.pt"))
+def load_model(modeldir, preset="edm2-img64-s-fid", device="cpu"):
+    model = ScoreFlow(preset, num_flows=8, device=device)
+    model.flow.load_state_dict(torch.load(f"{modeldir}/nb8/{preset}/flow.pt"))
+    return model
+
+@cache
+def load_model_from_hub(preset, device):
+    scorenet = build_model_from_pickle(preset)
+
+    hf_config = hf_hub_download(
+        repo_id="ahsanMah/localizing-edm",
+        subfolder=preset,
+        filename="config.json",
+        cache_dir="/tmp/",
+    )
+    with open(hf_config, "rb") as f:
+        model_params = json.load(f)
+        print("Loaded:", model_params)
+
+    hf_checkpoint = hf_hub_download(
+        repo_id="ahsanMah/localizing-edm",
+        subfolder=preset,
+        filename="model.safetensors",
+        cache_dir="/tmp/",
+    )
+
+    model = ScoreFlow(scorenet, device=device, **model_params['PatchFlow'])
+    model.load_state_dict(load_file(hf_checkpoint), strict=True)
+
     return model
 
 
@@ -62,8 +91,9 @@ def plot_heatmap(img: Image, heatmap: np.array):
     return im
 
 
-def run_inference(input_img, preset="edm2-img64-s-fid",  device="cuda"):
+def run_inference(input_img, preset="edm2-img64-s-fid"):
 
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     # img = center_crop_imagenet(64, img)
     input_img = input_img.resize(size=(64, 64), resample=Image.Resampling.LANCZOS)
 
@@ -71,7 +101,8 @@ def run_inference(input_img, preset="edm2-img64-s-fid",  device="cuda"):
         img = np.array(input_img)
         img = torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0)
         img = img.float().to(device)
-        model = load_model(modeldir="models", preset=preset, device=device)
+        # model = load_model(modeldir="models", preset=preset, device=device)
+        model = load_model_from_hub(preset=preset, device=device)
         img_likelihood = model(img).cpu().numpy()
         # img_likelihood = model.scorenet(img).square().sum(1).sum(1).contiguous().float().cpu().unsqueeze(1).numpy()
         # print(img_likelihood.shape, img_likelihood.dtype)
@@ -100,10 +131,7 @@ demo = gr.Interface(
         gr.Image(label="Anomaly Heatmap", min_width=64),
         gr.Plot(label="Comparing to Imagenette"),
     ],
-
-    examples=[
-        ['goldfish.JPEG', "edm2-img64-s-fid"]
-    ]
+    examples=[["goldfish.JPEG", "edm2-img64-s-fid"]],
 )
 
 if __name__ == "__main__":
