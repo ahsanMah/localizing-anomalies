@@ -19,7 +19,7 @@ from tqdm import tqdm
 
 import dnnlib
 from dataset import ImageFolderDataset
-from flowutils import PatchFlow
+from flowutils import PatchFlow, sanitize_locals
 
 DEVICE: Literal["cuda", "cpu"] = 'cpu'
 model_root = "https://nvlabs-fi-cdn.nvidia.com/edm2/posthoc-reconstructions"
@@ -53,9 +53,12 @@ class EDMScorer(torch.nn.Module):
         sigma_max=80,  # Maximum supported noise level.
         sigma_data=0.5,  # Expected standard deviation of the training data.
         rho=7,  # Time step discretization.
-        device=torch.device("cpu"),  # Device to use.
     ):
         super().__init__()
+
+        self.config = sanitize_locals(locals(), ignore_keys='net')
+        self.config['EDMNet'] = dict(net.init_kwargs)
+
         self.use_fp16 = use_fp16
         self.sigma_min = sigma_min
         self.sigma_max = sigma_max
@@ -67,14 +70,13 @@ class EDMScorer(torch.nn.Module):
         self.sigma_min = 1e-1
         self.sigma_max = sigma_max * stop_ratio
 
-        step_indices = torch.arange(num_steps, dtype=torch.float64, device=device)
+        step_indices = torch.arange(num_steps, dtype=torch.float64)
         t_steps = (
             self.sigma_max ** (1 / rho)
             + step_indices
             / (num_steps - 1)
             * (self.sigma_min ** (1 / rho) - self.sigma_max ** (1 / rho))
         ) ** rho
-        # print("Using steps:", t_steps)
 
         self.register_buffer("sigma_steps", t_steps.to(torch.float64))
 
@@ -100,28 +102,32 @@ class EDMScorer(torch.nn.Module):
 class ScoreFlow(torch.nn.Module):
     def __init__(
         self,
-        preset,
+        scorenet,
         device="cpu",
         **flow_kwargs
     ):
         super().__init__()
 
-        scorenet = build_model(preset)
         h = w = scorenet.net.img_resolution
         c = scorenet.net.img_channels
         num_sigmas = len(scorenet.sigma_steps)
         self.flow = PatchFlow((num_sigmas, c, h, w), **flow_kwargs)
+        
 
         self.flow = self.flow.to(device)
         self.scorenet = scorenet.to(device).requires_grad_(False)
         self.flow.init_weights()
+
+        self.config = dict()
+        self.config.update(**self.scorenet.config)
+        self.config.update(self.flow.config)
 
     def forward(self, x, **score_kwargs):
         x_scores = self.scorenet(x, **score_kwargs)
         return self.flow(x_scores)
 
 
-def build_model(preset="edm2-img64-s-fid", device="cpu"):
+def build_model_from_pickle(preset="edm2-img64-s-fid", device="cpu"):
     netpath = config_presets[preset]
     with dnnlib.util.open_url(netpath, verbose=1) as f:
         data = pickle.load(f)
@@ -198,7 +204,7 @@ def test_runner(device="cpu"):
     image = np.array(image)
     image = image.reshape(*image.shape[:2], -1).transpose(2, 0, 1)
     x = torch.from_numpy(image).unsqueeze(0).to(device)
-    model = build_model(device=device)
+    model = build_model_from_pickle(device=device)
     scores = model(x)
 
     return scores
@@ -211,8 +217,8 @@ def test_flow_runner(preset, device="cpu", load_weights=None):
     image = np.array(image)
     image = image.reshape(*image.shape[:2], -1).transpose(2, 0, 1)
     x = torch.from_numpy(image).unsqueeze(0).to(device)
-
-    score_flow = ScoreFlow(preset, device=device)
+    scorenet = build_model_from_pickle(preset)
+    score_flow = ScoreFlow(scorenet, device=device)
 
     if load_weights is not None:
         score_flow.flow.load_state_dict(torch.load(load_weights))
@@ -272,7 +278,7 @@ def cache_score_norms(preset, dataset_path, outdir):
         dsobj, batch_size=64, num_workers=4, prefetch_factor=2
     )
 
-    model = build_model(preset=preset, device=device)
+    model = build_model_from_pickle(preset=preset, device=device)
     score_norms = []
 
     for x, _ in tqdm(dsloader):
@@ -313,6 +319,14 @@ def cache_score_norms(preset, dataset_path, outdir):
     show_default=True,
 )
 @click.option(
+    "--epochs",
+    help="Number of epochs",
+    metavar="INT",
+    type=int,
+    default=10,
+    show_default=True,
+)
+@click.option(
     "--num_flows",
     help="Number of normalizing flow functions in the PatchFlow model",
     metavar="INT",
@@ -320,7 +334,7 @@ def cache_score_norms(preset, dataset_path, outdir):
     default=4,
     show_default=True,
 )
-def train_flow(dataset_path, preset, outdir, epochs=10, **flow_kwargs):
+def train_flow(dataset_path, preset, outdir, epochs, **flow_kwargs):
     print("using device:", DEVICE)
     device = DEVICE
     dsobj = ImageFolderDataset(path=dataset_path, resolution=64)
@@ -345,7 +359,8 @@ def train_flow(dataset_path, preset, outdir, epochs=10, **flow_kwargs):
         val_ds, batch_size=128, num_workers=4, prefetch_factor=2
     )
 
-    model = ScoreFlow(preset, device=device, **flow_kwargs)
+    scorenet = build_model_from_pickle(preset)
+    model = ScoreFlow(scorenet, device=device, **flow_kwargs)
     opt = torch.optim.AdamW(model.flow.parameters(), lr=3e-4, weight_decay=1e-5)
     train_step = partial(
         PatchFlow.stochastic_step,
@@ -373,6 +388,7 @@ def train_flow(dataset_path, preset, outdir, epochs=10, **flow_kwargs):
     step = 0
 
     for e in pbar:
+
         for x, _ in trainiter:
             x = x.to(device)
             scores = model.scorenet(x)
@@ -411,13 +427,14 @@ def train_flow(dataset_path, preset, outdir, epochs=10, **flow_kwargs):
     # Squeeze the juice
     best_ckpt = torch.load(f"{experiment_dir}/flow.pt")
     model.flow.load_state_dict(best_ckpt)
-    for i, (x, _) in enumerate(testiter):
+    pbar = tqdm(testiter, desc="(Tuning) Step:? - Loss: ?")
+    for x, _ in pbar:
         x = x.to(device)
         scores = model.scorenet(x)
         train_loss = train_step(scores, x)
         writer.add_scalar("loss/train", train_loss, step)
         pbar.set_description(
-            f"(Tuning) Step: {step:d} - Train: {train_loss:.3f} - Val: {val_loss:.3f}"
+            f"(Tuning) Step: {step:d} - Loss: {train_loss:.3f}"
         )
         step += 1
 

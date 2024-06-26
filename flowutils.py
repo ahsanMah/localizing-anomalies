@@ -8,6 +8,66 @@ from einops import rearrange, repeat
 from normflows.distributions import BaseDistribution
 
 
+def sanitize_locals(args_dict, ignore_keys=None):
+
+    if ignore_keys is None:
+        ignore_keys = []
+
+    if not isinstance(ignore_keys, list):
+        ignore_keys = [ignore_keys]
+
+    _dict = args_dict.copy()
+    _dict.pop("self")
+    class_name = _dict.pop("__class__").__name__
+    class_params = {k: v for k, v in _dict.items() if k not in ignore_keys}
+
+    return {class_name: class_params}
+
+
+def build_flows(
+    latent_size, num_flows=4, num_blocks_per_flow=2, hidden_units=128, context_size=64
+):
+    # Define flows
+
+    flows = []
+
+    flows.append(
+        nf.flows.MaskedAffineAutoregressive(
+            latent_size,
+            hidden_features=hidden_units,
+            num_blocks=num_blocks_per_flow,
+            context_features=context_size,
+        )
+    )
+
+    for i in range(num_flows):
+        flows += [
+            nf.flows.CoupledRationalQuadraticSpline(
+                latent_size,
+                num_blocks=num_blocks_per_flow,
+                num_hidden_channels=hidden_units,
+                num_context_channels=context_size,
+            )
+        ]
+        flows += [nf.flows.LULinearPermute(latent_size)]
+
+    # Set base distribution
+
+    context_encoder = nn.Sequential(
+        nn.Linear(context_size, context_size),
+        nn.SiLU(),
+        # output mean and scales for K=latent_size dimensions
+        nn.Linear(context_size, latent_size * 2),
+    )
+
+    q0 = ConditionalDiagGaussian(latent_size, context_encoder)
+
+    # Construct flow model
+    model = nf.ConditionalNormalizingFlow(q0, flows)
+
+    return model
+
+
 class ConditionalDiagGaussian(BaseDistribution):
     """
     Conditional multivariate Gaussian distribution with diagonal
@@ -59,50 +119,6 @@ class ConditionalDiagGaussian(BaseDistribution):
             list(range(1, self.n_dim + 1)),
         )
         return log_p
-
-
-def build_flows(
-    latent_size, num_flows=4, num_blocks_per_flow=2, hidden_units=128, context_size=64
-):
-    # Define flows
-
-    flows = []
-
-    flows.append(
-        nf.flows.MaskedAffineAutoregressive(
-            latent_size,
-            hidden_features=hidden_units,
-            num_blocks=num_blocks_per_flow,
-            context_features=context_size,
-        )
-    )
-
-    for i in range(num_flows):
-        flows += [
-            nf.flows.CoupledRationalQuadraticSpline(
-                latent_size,
-                num_blocks=num_blocks_per_flow,
-                num_hidden_channels=hidden_units,
-                num_context_channels=context_size,
-            )
-        ]
-        flows += [nf.flows.LULinearPermute(latent_size)]
-
-    # Set base distribution
-
-    context_encoder = nn.Sequential(
-        nn.Linear(context_size, context_size),
-        nn.SiLU(),
-        # output mean and scales for K=latent_size dimensions
-        nn.Linear(context_size, latent_size * 2),
-    )
-
-    q0 = ConditionalDiagGaussian(latent_size, context_encoder)
-
-    # Construct flow model
-    model = nf.ConditionalNormalizingFlow(q0, flows)
-
-    return model
 
 
 def get_emb(sin_inp):
@@ -204,6 +220,9 @@ class PatchFlow(torch.nn.Module):
         hidden_units=128,
     ):
         super().__init__()
+
+        self.config = sanitize_locals(locals(), ignore_keys=input_size)
+
         num_sigmas, c, h, w = input_size
         self.local_pooler = SpatialNormer(
             in_channels=num_sigmas, kernel_size=patch_size
