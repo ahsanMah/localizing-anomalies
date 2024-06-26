@@ -15,9 +15,11 @@ from msma import ScoreFlow, build_model_from_pickle, config_presets
 
 @cache
 def load_model(modeldir, preset="edm2-img64-s-fid", device="cpu"):
-    model = ScoreFlow(preset, num_flows=8, device=device)
-    model.flow.load_state_dict(torch.load(f"{modeldir}/nb8/{preset}/flow.pt"))
+    scorenet = build_model_from_pickle(preset=preset)
+    model = ScoreFlow(scorenet, num_flows=8, device=device)
+    model.flow.load_state_dict(torch.load(f"{modeldir}/comb/{preset}/flow.pt"))
     return model
+
 
 @cache
 def load_model_from_hub(preset, device):
@@ -40,7 +42,7 @@ def load_model_from_hub(preset, device):
         cache_dir="/tmp/",
     )
 
-    model = ScoreFlow(scorenet, device=device, **model_params['PatchFlow'])
+    model = ScoreFlow(scorenet, device=device, **model_params["PatchFlow"])
     model.load_state_dict(load_file(hf_checkpoint), strict=True)
 
     return model
@@ -91,7 +93,7 @@ def plot_heatmap(img: Image, heatmap: np.array):
     return im
 
 
-def run_inference(input_img, preset="edm2-img64-s-fid"):
+def run_inference(input_img, preset="edm2-img64-s-fid", load_from_hub=False):
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     # img = center_crop_imagenet(64, img)
@@ -101,11 +103,12 @@ def run_inference(input_img, preset="edm2-img64-s-fid"):
         img = np.array(input_img)
         img = torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0)
         img = img.float().to(device)
-        # model = load_model(modeldir="models", preset=preset, device=device)
-        model = load_model_from_hub(preset=preset, device=device)
+        if load_from_hub:
+            model = load_model_from_hub(preset=preset, device=device)
+        else:
+            model = load_model(modeldir="models", preset=preset, device=device)
+        
         img_likelihood = model(img).cpu().numpy()
-        # img_likelihood = model.scorenet(img).square().sum(1).sum(1).contiguous().float().cpu().unsqueeze(1).numpy()
-        # print(img_likelihood.shape, img_likelihood.dtype)
         img = torch.nn.functional.interpolate(img, size=64, mode="bilinear")
         x = model.scorenet(img)
         x = x.square().sum(dim=(2, 3, 4)) ** 0.5
@@ -124,14 +127,27 @@ demo = gr.Interface(
     fn=run_inference,
     inputs=[
         gr.Image(type="pil", label="Input Image"),
-        gr.Dropdown(choices=config_presets.keys(), label="Score Model"),
+        gr.Dropdown(
+            choices=config_presets.keys(),
+            label="Score Model Preset",
+            info="The preset of the underlying score estimator. These are the EDM2 diffusion models from Karras et.al.",
+        ),
+        gr.Checkbox(
+            label="HuggingFace Hub",
+            value=True,
+            info="Load a pretrained model from HuggingFace. Uncheck to use a model from `models`  directory.",
+        ),
     ],
     outputs=[
         "text",
         gr.Image(label="Anomaly Heatmap", min_width=64),
         gr.Plot(label="Comparing to Imagenette"),
     ],
-    examples=[["goldfish.JPEG", "edm2-img64-s-fid"]],
+    examples=[
+        ["samples/duckelephant.jpeg", "edm2-img64-s-fid", True],
+        ["samples/sharkhorse.jpeg", "edm2-img64-s-fid", True],
+        ["samples/goldfish.jpeg", "edm2-img64-s-fid", True],
+    ],
 )
 
 if __name__ == "__main__":
