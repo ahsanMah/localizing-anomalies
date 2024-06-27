@@ -223,16 +223,23 @@ def common_args(func):
     return wrapper
 
 @cmdline.command('train-gmm')
+@click.option(
+    "--gridsearch",
+    help="Whether to use a grid search on a number of components to find the best fit",
+    is_flag=True,
+    default=False,
+)
 @common_args
-def train_gmm(score_path, outdir, grid_search=False):
-    X = torch.load(score_path)
+def train_gmm(preset, outdir, gridsearch=False, **kwargs):
+    score_path = f"{outdir}/{preset}/imagenette_score_norms.pt"
+    X = torch.load(score_path).numpy()
 
     gm = GaussianMixture(
         n_components=7, init_params="kmeans", covariance_type="full", max_iter=100000
     )
     clf = Pipeline([("scaler", StandardScaler()), ("GMM", gm)])
 
-    if grid_search:
+    if gridsearch:
         param_grid = dict(
             GMM__n_components=range(2, 11, 1),
         )
@@ -369,6 +376,9 @@ def train_flow(dataset_path, preset, outdir, epochs, **flow_kwargs):
     with open(f"{experiment_dir}/logs/{timestamp}/config.json", "w") as f: 
         json.dump(model.config, f, sort_keys=True, indent=4)
 
+    with open(f"{experiment_dir}/config.json", "w") as f: 
+        json.dump(model.config, f, sort_keys=True, indent=4)
+        
     # totaliters = int(epochs * train_len)
     pbar = tqdm(range(epochs), desc="Train Loss: ? - Val Loss: ?")
     step = 0
@@ -433,8 +443,6 @@ def train_flow(dataset_path, preset, outdir, epochs, **flow_kwargs):
 
     # Save final model
     torch.save(model.flow.state_dict(), f"{experiment_dir}/flow.pt")
-    with open(f"{experiment_dir}/config.json", "w") as f: 
-        json.dump(model.config, f, sort_keys=True, indent=4)
     
     writer.close()
 
