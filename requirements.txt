@@ -1,9 +1,10 @@
+gradio
 einops
 normflows
 tensorboard
 numpy~=1.26.0
 scikit-learn
-torch~=2.1.0
+torch~=2.2.0
 click
 Pillow
 psutil
