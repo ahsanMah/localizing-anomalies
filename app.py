@@ -68,7 +68,7 @@ def compute_gmm_likelihood(x_score, model_dir):
 
 def plot_against_reference(nll, ref_nll):
     fig, ax = plt.subplots()
-    ax.hist(ref_nll, label="Reference Scores")
+    ax.hist(ref_nll, label="Reference Scores", bins=25)
     ax.axvline(nll, label="Image Score", c="red", ls="--")
     plt.legend()
     fig.tight_layout()
@@ -93,7 +93,15 @@ def plot_heatmap(img: Image, heatmap: np.array):
     return im
 
 
-def run_inference(input_img, preset="edm2-img64-s-fid", load_from_hub=False):
+def run_inference(model, img):
+    img = torch.nn.functional.interpolate(img, size=64, mode="bilinear")
+    score_norms = model.scorenet(img)
+    score_norms = score_norms.square().sum(dim=(2, 3, 4)) ** 0.5
+    img_likelihood = model(img).cpu().numpy()
+    score_norms = score_norms.cpu().numpy()
+    return img_likelihood, score_norms
+
+def localize_anomalies(input_img, preset="edm2-img64-s-fid", load_from_hub=False):
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     # img = center_crop_imagenet(64, img)
@@ -108,12 +116,9 @@ def run_inference(input_img, preset="edm2-img64-s-fid", load_from_hub=False):
         else:
             model = load_model(modeldir="models", preset=preset, device=device)
         
-        img_likelihood = model(img).cpu().numpy()
-        img = torch.nn.functional.interpolate(img, size=64, mode="bilinear")
-        x = model.scorenet(img)
-        x = x.square().sum(dim=(2, 3, 4)) ** 0.5
+        img_likelihood, score_norms = run_inference(model, img)
         nll, pct, ref_nll = compute_gmm_likelihood(
-            x.cpu(), model_dir=f"models/{preset}"
+            score_norms, model_dir=f"models/{preset}"
         )
 
     outstr = f"Anomaly score: {nll:.3f} / {pct:.2f} percentile"
@@ -124,7 +129,7 @@ def run_inference(input_img, preset="edm2-img64-s-fid", load_from_hub=False):
 
 
 demo = gr.Interface(
-    fn=run_inference,
+    fn=localize_anomalies,
     inputs=[
         gr.Image(type="pil", label="Input Image"),
         gr.Dropdown(
@@ -139,7 +144,7 @@ demo = gr.Interface(
         ),
     ],
     outputs=[
-        "text",
+        gr.Text(label="Estimated global outlier scores - Percentiles with respect to Imagenette Scores"),
         gr.Image(label="Anomaly Heatmap", min_width=64),
         gr.Plot(label="Comparing to Imagenette"),
     ],
