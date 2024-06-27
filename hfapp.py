@@ -13,6 +13,7 @@ from app import (
 
 
 @spaces.GPU
+@torch.no_grad
 def run_inference(model, img):
     model = model.to('cuda')
     img = img.to('cuda')

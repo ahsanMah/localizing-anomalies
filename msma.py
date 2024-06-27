@@ -81,7 +81,7 @@ class EDMScorer(torch.nn.Module):
 
         self.register_buffer("sigma_steps", t_steps.to(torch.float64))
 
-    # @torch.inference_mode()
+    @torch.no_grad
     def forward(
         self,
         x,
@@ -110,7 +110,7 @@ class ScoreFlow(torch.nn.Module):
         self.flow = PatchFlow((num_sigmas, c, h, w), **flow_kwargs)
 
         self.flow = self.flow.to(device)
-        self.scorenet = scorenet.to(device).requires_grad_(False)
+        self.scorenet = scorenet.to(device).eval().requires_grad_(False)
         self.flow.init_weights()
 
         self.config = dict()
@@ -432,14 +432,15 @@ def train_flow(dataset_path, preset, outdir, epochs, **flow_kwargs):
     # Squeeze the juice
     best_ckpt = torch.load(f"{experiment_dir}/flow.pt")
     model.flow.load_state_dict(best_ckpt)
-    pbar = tqdm(testiter, desc="(Tuning) Step:? - Loss: ?")
-    for x, _ in pbar:
-        x = x.to(device)
-        scores = model.scorenet(x)
-        train_loss = train_step(scores, x)
-        writer.add_scalar("loss/train", train_loss, step)
-        pbar.set_description(f"(Tuning) Step: {step:d} - Loss: {train_loss:.3f}")
-        step += 1
+    pbar = tqdm(range(10), desc="(Tuning) Step:? - Loss: ?")
+    for e in pbar:
+        for x, _ in testiter:
+            x = x.to(device)
+            scores = model.scorenet(x)
+            train_loss = train_step(scores, x)
+            writer.add_scalar("loss/train", train_loss, step)
+            pbar.set_description(f"(Tuning) Step: {step:d} - Loss: {train_loss:.3f}")
+            step += 1
 
     # Save final model
     torch.save(model.flow.state_dict(), f"{experiment_dir}/flow.pt")

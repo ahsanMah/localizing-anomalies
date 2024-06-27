@@ -1,4 +1,5 @@
 import json
+import os
 from functools import cache
 from pickle import load
 
@@ -17,7 +18,7 @@ from msma import ScoreFlow, build_model_from_pickle, config_presets
 def load_model(modeldir, preset="edm2-img64-s-fid", device="cpu"):
     scorenet = build_model_from_pickle(preset=preset)
     model = ScoreFlow(scorenet, num_flows=8, device=device)
-    model.flow.load_state_dict(torch.load(f"{modeldir}/comb/{preset}/flow.pt"))
+    model.flow.load_state_dict(torch.load(f"{modeldir}/{preset}/flow.pt"))
     return model
 
 
@@ -25,29 +26,27 @@ def load_model(modeldir, preset="edm2-img64-s-fid", device="cpu"):
 def load_model_from_hub(preset, device):
     scorenet = build_model_from_pickle(preset)
 
-    hf_config = hf_hub_download(
-        repo_id="ahsanMah/localizing-edm",
-        subfolder=preset,
-        filename="config.json",
-        cache_dir="/tmp/",
-    )
-    with open(hf_config, "rb") as f:
+    for fname in ['config.json', 'gmm.pkl', 'refscores.npz', 'model.safetensors' ]:
+        cached_fname = hf_hub_download(
+            repo_id="ahsanMah/localizing-edm",
+            subfolder=preset,
+            filename=fname,
+            cache_dir="/tmp/",
+        )
+    modeldir = os.path.dirname(cached_fname)
+    print("HF Cache Dir:", modeldir)
+    
+
+    with open(f"{modeldir}/config.json", "rb") as f:
         model_params = json.load(f)
         print("Loaded:", model_params)
 
-    hf_checkpoint = hf_hub_download(
-        repo_id="ahsanMah/localizing-edm",
-        subfolder=preset,
-        filename="model.safetensors",
-        cache_dir="/tmp/",
-    )
-
-    print("HF SAVE DIR:", hf_checkpoint)
-
+    hf_checkpoint = f"{modeldir}/model.safetensors"
     model = ScoreFlow(scorenet, device=device, **model_params["PatchFlow"])
     model.load_state_dict(load_file(hf_checkpoint), strict=True)
     model = model.eval().requires_grad_(False)
-    return model
+
+    return model, modeldir
 
 
 @cache
@@ -58,6 +57,8 @@ def load_reference_scores(model_dir):
 
 
 def compute_gmm_likelihood(x_score, model_dir):
+
+
     with open(f"{model_dir}/gmm.pkl", "rb") as f:
         clf = load(f)
         nll = -clf.score(x_score)
@@ -94,7 +95,7 @@ def plot_heatmap(img: Image, heatmap: np.array):
     # fig.tight_layout()
     return im
 
-
+@torch.no_grad
 def run_inference(model, img):
     img = torch.nn.functional.interpolate(img, size=64, mode="bilinear")
     score_norms = model.scorenet(img)
@@ -114,13 +115,13 @@ def localize_anomalies(input_img, preset="edm2-img64-s-fid", load_from_hub=False
         img = torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0)
         img = img.float().to(device)
         if load_from_hub:
-            model = load_model_from_hub(preset=preset, device=device)
+            model, modeldir = load_model_from_hub(preset=preset, device=device)
         else:
+            modeldir = f"models/{preset}"
             model = load_model(modeldir="models", preset=preset, device=device)
-        
         img_likelihood, score_norms = run_inference(model, img)
         nll, pct, ref_nll = compute_gmm_likelihood(
-            score_norms, model_dir=f"models/{preset}"
+            score_norms, model_dir=modeldir
         )
 
     outstr = f"Anomaly score: {nll:.3f} / {pct:.2f} percentile"
