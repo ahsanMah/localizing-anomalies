@@ -127,33 +127,39 @@ def localize_anomalies(input_img, preset="edm2-img64-s-fid", load_from_hub=False
 
     return outstr, heatmapplot, histplot
 
+def build_demo(inference_fn):
 
-demo = gr.Interface(
-    fn=localize_anomalies,
-    inputs=[
-        gr.Image(type="pil", label="Input Image"),
-        gr.Dropdown(
-            choices=config_presets.keys(),
-            label="Score Model Preset",
-            info="The preset of the underlying score estimator. These are the EDM2 diffusion models from Karras et.al.",
-        ),
-        gr.Checkbox(
-            label="HuggingFace Hub",
-            value=True,
-            info="Load a pretrained model from HuggingFace. Uncheck to use a model from `models`  directory.",
-        ),
-    ],
-    outputs=[
-        gr.Text(label="Estimated global outlier scores - Percentiles with respect to Imagenette Scores"),
-        gr.Image(label="Anomaly Heatmap", min_width=64),
-        gr.Plot(label="Comparing to Imagenette"),
-    ],
-    examples=[
-        ["samples/duckelephant.jpeg", "edm2-img64-s-fid", True],
-        ["samples/sharkhorse.jpeg", "edm2-img64-s-fid", True],
-        ["samples/goldfish.jpeg", "edm2-img64-s-fid", True],
-    ],
-)
+    demo = gr.Interface(
+        fn=inference_fn,
+        inputs=[
+            gr.Image(type="pil", label="Input Image"),
+            gr.Dropdown(
+                choices=config_presets.keys(),
+                label="Score Model Preset",
+                info="The preset of the underlying score estimator. These are the EDM2 diffusion models from Karras et.al.",
+            ),
+            gr.Checkbox(
+                label="HuggingFace Hub",
+                value=True,
+                info="Load a pretrained model from HuggingFace. Uncheck to use a model from `models`  directory.",
+            ),
+        ],
+        outputs=[
+            gr.Text(
+                label="Estimated global outlier scores - Percentiles with respect to Imagenette Scores"
+            ),
+            gr.Image(label="Anomaly Heatmap", min_width=64),
+            gr.Plot(label="Comparing to Imagenette"),
+        ],
+        examples=[
+            ["samples/duckelephant.jpeg", "edm2-img64-s-fid", True],
+            ["samples/sharkhorse.jpeg", "edm2-img64-s-fid", True],
+            ["samples/goldfish.jpeg", "edm2-img64-s-fid", True],
+        ],
+    )
 
+    return demo
+
+demo = build_demo(localize_anomalies)
 if __name__ == "__main__":
     demo.launch()
