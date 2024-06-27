@@ -14,6 +14,7 @@ from app import (
 
 @spaces.GPU
 def run_inference(model, img):
+    print("model on cuda:", next(model.scorenet.net.parameters()).is_cuda)
     img = torch.nn.functional.interpolate(img, size=64, mode="bilinear")
     score_norms = model.scorenet(img)
     score_norms = score_norms.square().sum(dim=(2, 3, 4)) ** 0.5
@@ -32,11 +33,7 @@ def localize_anomalies(input_img, preset="edm2-img64-s-fid", load_from_hub=False
         img = np.array(input_img)
         img = torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0)
         img = img.float().to(device)
-        if load_from_hub:
-            model = load_model_from_hub(preset=preset, device=device)
-        else:
-            model = load_model(modeldir="models", preset=preset, device=device)
-
+        model = load_model_from_hub(preset=preset, device=device)
         img_likelihood, score_norms = run_inference(model, img)
         nll, pct, ref_nll = compute_gmm_likelihood(
             score_norms, model_dir=f"models/{preset}"
@@ -47,7 +44,6 @@ def localize_anomalies(input_img, preset="edm2-img64-s-fid", load_from_hub=False
     heatmapplot = plot_heatmap(input_img, img_likelihood)
 
     return outstr, heatmapplot, histplot
-
 
 
 demo = build_demo(localize_anomalies)
