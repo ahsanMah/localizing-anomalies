@@ -14,7 +14,10 @@ from app import (
 
 @spaces.GPU
 def run_inference(model, img):
+    model = model.to('cuda')
+    img = img.to('cuda')
     print("model on cuda:", next(model.scorenet.net.parameters()).is_cuda)
+    print("img on cuda:", img.is_cuda)
     img = torch.nn.functional.interpolate(img, size=64, mode="bilinear")
     score_norms = model.scorenet(img)
     score_norms = score_norms.square().sum(dim=(2, 3, 4)) ** 0.5
@@ -24,20 +27,16 @@ def run_inference(model, img):
 
 
 def localize_anomalies(input_img, preset="edm2-img64-s-fid", load_from_hub=False):
-    print("NEW LOCALIZE")
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    # img = center_crop_imagenet(64, img)
+    device = "cuda"
     input_img = input_img.resize(size=(64, 64), resample=Image.Resampling.LANCZOS)
-
-    with torch.inference_mode():
-        img = np.array(input_img)
-        img = torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0)
-        img = img.float().to(device)
-        model = load_model_from_hub(preset=preset, device=device)
-        img_likelihood, score_norms = run_inference(model, img)
-        nll, pct, ref_nll = compute_gmm_likelihood(
-            score_norms, model_dir=f"models/{preset}"
-        )
+    img = np.array(input_img)
+    img = torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0)
+    img = img.float().to(device)
+    model = load_model_from_hub(preset=preset, device=device)
+    img_likelihood, score_norms = run_inference(model, img)
+    nll, pct, ref_nll = compute_gmm_likelihood(
+        score_norms, model_dir=f"models/{preset}"
+    )
 
     outstr = f"Anomaly score: {nll:.3f} / {pct:.2f} percentile"
     histplot = plot_against_reference(nll, ref_nll)
