@@ -26,9 +26,13 @@ def main(basedir, preset):
     modeldir = basedir / preset
 
     net = build_model_from_pickle(preset)
+    with open(modeldir / "config.json", "rb") as f:
+        model_params = json.load(f)
+
     model = ScoreFlow(
         net,
-        num_flows=8,
+        device="cpu",
+        **model_params["PatchFlow"],
     )
     model.flow.load_state_dict(torch.load(modeldir / "flow.pt"))
 
@@ -46,10 +50,13 @@ def main(basedir, preset):
         save_file(model.state_dict(), tmpdir / "model.safetensors")
 
         # save config
-        (tmpdir / "config.json").write_text(json.dumps(model.config, sort_keys=True, indent=4))
-        
-        # TODO: save gmm and cached score norms
+        (tmpdir / "config.json").write_text(
+            json.dumps(model.config, sort_keys=True, indent=4)
+        )
 
+        # save gmm and cached score norms
+        shutil.copyfile(modeldir / "gmm.pkl", tmpdir / "gmm.pkl")
+        shutil.copyfile(modeldir / "refscores.npz", tmpdir / "refscores.npz")
 
         # Generate model card
         # card = generate_model_card(model)
@@ -57,8 +64,7 @@ def main(basedir, preset):
 
         # Save logs
         shutil.copytree(modeldir / "logs", tmpdir / "logs")
-        
-        
+
         # Push to hub
         api.upload_folder(repo_id=repo_id, path_in_repo=preset, folder_path=tmpdir)
 
