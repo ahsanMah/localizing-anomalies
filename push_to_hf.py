@@ -37,6 +37,8 @@ def main(basedir, preset):
     model.flow.load_state_dict(torch.load(modeldir / "flow.pt"))
 
     api = HfApi()
+
+    # Use your own repo
     repo_name = "ahsanMah/localizing-edm"
 
     # Create repo if not existing yet and get the associated repo_id
@@ -54,7 +56,7 @@ def main(basedir, preset):
             json.dumps(model.config, sort_keys=True, indent=4)
         )
 
-        # save gmm and cached score norms
+        # save gmm and cached score likelihoods
         shutil.copyfile(modeldir / "gmm.pkl", tmpdir / "gmm.pkl")
         shutil.copyfile(modeldir / "refscores.npz", tmpdir / "refscores.npz")
 
