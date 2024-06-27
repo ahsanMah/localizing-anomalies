@@ -88,11 +88,6 @@ def plot_heatmap(img: Image, heatmap: np.array):
     h = cmap(h, bytes=True)[:, :, :3]
     h = Image.fromarray(h).resize(img.size, resample=Image.Resampling.BILINEAR)
     im = Image.blend(img, h, alpha=0.6)
-    # im = ax.imshow(np.array(im))
-    # # fig.colorbar(im)
-    # # plt.grid(False)
-    # # plt.axis("off")
-    # fig.tight_layout()
     return im
 
 @torch.no_grad
@@ -106,6 +101,7 @@ def run_inference(model, img):
 
 def localize_anomalies(input_img, preset="edm2-img64-s-fid", load_from_hub=False):
 
+    orig_size = input_img.size
     device = "cuda" if torch.cuda.is_available() else "cpu"
     # img = center_crop_imagenet(64, img)
     input_img = input_img.resize(size=(64, 64), resample=Image.Resampling.LANCZOS)
@@ -127,6 +123,7 @@ def localize_anomalies(input_img, preset="edm2-img64-s-fid", load_from_hub=False
     outstr = f"Anomaly score: {nll:.3f} / {pct:.2f} percentile"
     histplot = plot_against_reference(nll, ref_nll)
     heatmapplot = plot_heatmap(input_img, img_likelihood)
+    heatmapplot = heatmapplot.resize(orig_size)
 
     return outstr, heatmapplot, histplot
 
@@ -151,7 +148,7 @@ def build_demo(inference_fn):
             gr.Text(
                 label="Estimated global outlier scores - Percentiles with respect to Imagenette Scores"
             ),
-            gr.Image(label="Anomaly Heatmap", min_width=64),
+            gr.Image(label="Anomaly Heatmap", min_width=160),
             gr.Plot(label="Comparing to Imagenette"),
         ],
         examples=[

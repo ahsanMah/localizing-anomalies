@@ -11,6 +11,7 @@ pinned: false
     <img src="samples/duckelephant.jpeg" alt="input elephant" width="32%"/>
     <img src="assets/heatmap.webp" alt="heatmap image" width="32%"/>
 </p>
+
 ## Introduction
 
 This project aims to add anomaly detection capabilities to score-based diffusion models, enabling the detection of anomalies in natural images. The core idea is to learn the distribution of typical score vectors for each patch position in an image. By training a position-conditioned normalizing flow model, we can estimate the likelihood of the score vectors' outputs. This allows for visualizing per-patch likelihoods and generating heatmaps of anomalies.
