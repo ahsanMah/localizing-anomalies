@@ -81,7 +81,7 @@ class EDMScorer(torch.nn.Module):
 
         self.register_buffer("sigma_steps", t_steps.to(torch.float64))
 
-    @torch.inference_mode()
+    # @torch.inference_mode()
     def forward(
         self,
         x,
@@ -378,7 +378,7 @@ def train_flow(dataset_path, preset, outdir, epochs, **flow_kwargs):
 
     with open(f"{experiment_dir}/config.json", "w") as f: 
         json.dump(model.config, f, sort_keys=True, indent=4)
-        
+
     # totaliters = int(epochs * train_len)
     pbar = tqdm(range(epochs), desc="Train Loss: ? - Val Loss: ?")
     step = 0

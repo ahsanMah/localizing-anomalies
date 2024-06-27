@@ -42,9 +42,11 @@ def load_model_from_hub(preset, device):
         cache_dir="/tmp/",
     )
 
+    print("HF SAVE DIR:", hf_checkpoint)
+
     model = ScoreFlow(scorenet, device=device, **model_params["PatchFlow"])
     model.load_state_dict(load_file(hf_checkpoint), strict=True)
-
+    model = model.eval().requires_grad_(False)
     return model
 
 
