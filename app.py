@@ -28,6 +28,10 @@ def load_model(modeldir, preset="edm2-img64-s-fid", device="cpu"):
 
 @cache
 def load_model_from_hub(preset, device):
+    cache_dir = "/tmp/"
+    if 'DNNLIB_CACHE_DIR' in os.environ:
+        cache_dir = os.environ["DNNLIB_CACHE_DIR"]
+
     scorenet = build_model_from_pickle(preset)
 
     for fname in ['config.json', 'gmm.pkl', 'refscores.npz', 'model.safetensors' ]:
@@ -35,11 +39,10 @@ def load_model_from_hub(preset, device):
             repo_id="ahsanMah/localizing-edm",
             subfolder=preset,
             filename=fname,
-            cache_dir="/tmp/",
+            cache_dir=cache_dir,
         )
     modeldir = os.path.dirname(cached_fname)
     print("HF Cache Dir:", modeldir)
-    
 
     with open(f"{modeldir}/config.json", "rb") as f:
         model_params = json.load(f)
