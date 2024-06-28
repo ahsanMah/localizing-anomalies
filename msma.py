@@ -331,12 +331,19 @@ def cache_score_norms(preset, dataset_path, outdir, batch_size):
     default=4,
     show_default=True,
 )
+@click.option(
+    "--batch_size",
+    help="Number of samples per batch",
+    metavar="INT",
+    type=int,
+    default=128,
+    show_default=True,
+)
 @common_args
-def train_flow(dataset_path, preset, outdir, epochs, **flow_kwargs):
+def train_flow(dataset_path, preset, outdir, epochs, batch_size, **flow_kwargs):
     print("using device:", DEVICE)
     device = DEVICE
     dsobj = ImageFolderDataset(path=dataset_path, resolution=64)
-    refimg, reflabel = dsobj[0]
     print(f"Loaded {len(dsobj)} samples from {dataset_path}")
 
     # Subset of training dataset
@@ -351,10 +358,10 @@ def train_flow(dataset_path, preset, outdir, epochs, **flow_kwargs):
     val_ds = Subset(dsobj, range(train_len, train_len + val_len))
 
     trainiter = torch.utils.data.DataLoader(
-        train_ds, batch_size=64, num_workers=4, prefetch_factor=2, shuffle=True
+        train_ds, batch_size=batch_size, num_workers=4, prefetch_factor=2, shuffle=True
     )
     testiter = torch.utils.data.DataLoader(
-        val_ds, batch_size=128, num_workers=4, prefetch_factor=2
+        val_ds, batch_size=batch_size*2, num_workers=4, prefetch_factor=2
     )
 
     scorenet = build_model_from_pickle(preset)
