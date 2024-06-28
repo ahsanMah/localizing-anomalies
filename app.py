@@ -16,10 +16,14 @@ from msma import ScoreFlow, build_model_from_pickle, config_presets
 
 @cache
 def load_model(modeldir, preset="edm2-img64-s-fid", device="cpu"):
+    modeldir = f"{modeldir}/{preset}"
+    with open(f"{modeldir}/config.json", "rb") as f:
+        model_params = json.load(f)
     scorenet = build_model_from_pickle(preset=preset)
-    model = ScoreFlow(scorenet, num_flows=8, device=device)
-    model.flow.load_state_dict(torch.load(f"{modeldir}/{preset}/flow.pt"))
-    return model
+    model = ScoreFlow(scorenet, **model_params['PatchFlow'])
+    model.flow.load_state_dict(torch.load(f"{modeldir}/flow.pt"))
+    print("Loaded:", model_params)
+    return model.to(device)
 
 
 @cache
@@ -113,8 +117,8 @@ def localize_anomalies(input_img, preset="edm2-img64-s-fid", load_from_hub=False
         if load_from_hub:
             model, modeldir = load_model_from_hub(preset=preset, device=device)
         else:
-            modeldir = f"models/{preset}"
             model = load_model(modeldir="models", preset=preset, device=device)
+            modeldir = f"models/{preset}"
         img_likelihood, score_norms = run_inference(model, img)
         nll, pct, ref_nll = compute_gmm_likelihood(
             score_norms, model_dir=modeldir
