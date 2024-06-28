@@ -33,10 +33,10 @@ def localize_anomalies(input_img, preset="edm2-img64-s-fid", load_from_hub=False
     img = np.array(input_img)
     img = torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0)
     img = img.float().to(device)
-    model = load_model_from_hub(preset=preset, device=device)
+    model, modeldir = load_model_from_hub(preset=preset, device=device)
     img_likelihood, score_norms = run_inference(model, img)
     nll, pct, ref_nll = compute_gmm_likelihood(
-        score_norms, model_dir=f"models/{preset}"
+        score_norms, model_dir=modeldir
     )
 
     outstr = f"Anomaly score: {nll:.3f} / {pct:.2f} percentile"
