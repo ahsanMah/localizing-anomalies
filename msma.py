@@ -276,8 +276,16 @@ def train_gmm(preset, outdir, gridsearch=False, **kwargs):
 
 
 @cmdline.command(name="cache-scores")
+@click.option(
+    "--batch_size",
+    help="Number of samples per batch",
+    metavar="INT",
+    type=int,
+    default=64,
+    show_default=True,
+)
 @common_args
-def cache_score_norms(preset, dataset_path, outdir):
+def cache_score_norms(preset, dataset_path, outdir, batch_size):
     device = DEVICE
     dsobj = ImageFolderDataset(path=dataset_path, resolution=64)
     refimg, reflabel = dsobj[0]
@@ -286,7 +294,7 @@ def cache_score_norms(preset, dataset_path, outdir):
         f"Number of Samples: {len(dsobj)} - shape: {refimg.shape}, dtype: {refimg.dtype}, labels {reflabel}"
     )
     dsloader = torch.utils.data.DataLoader(
-        dsobj, batch_size=64, num_workers=4, prefetch_factor=2
+        dsobj, batch_size=batch_size, num_workers=4, prefetch_factor=2
     )
 
     model = build_model_from_pickle(preset=preset, device=device)
