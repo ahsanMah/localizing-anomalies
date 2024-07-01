@@ -21,6 +21,7 @@ from tqdm import tqdm
 import dnnlib
 from dataset import ImageFolderDataset
 from flowutils import PatchFlow, sanitize_locals
+from networks_edm2 import Precond
 
 DEVICE: Literal["cuda", "cpu"] = "cpu"
 model_root = "https://nvlabs-fi-cdn.nvidia.com/edm2/posthoc-reconstructions"
@@ -122,6 +123,14 @@ class ScoreFlow(torch.nn.Module):
         return self.flow(x_scores)
 
 
+def build_model_from_config(model_params):
+    net = Precond(**model_params["EDMNet"])
+    scorenet = EDMScorer(net=net, **model_params["EDMScorer"])
+    scoreflow = ScoreFlow(scorenet=scorenet, **model_params["PatchFlow"])
+    print("Built model from config")
+    return scoreflow
+
+
 def build_model_from_pickle(preset="edm2-img64-s-fid", device="cpu"):
     netpath = config_presets[preset]
     with dnnlib.util.open_url(netpath, verbose=1) as f:
@@ -196,13 +205,13 @@ def cmdline():
 def common_args(func):
     @wraps(func)
     @click.option(
-    "--preset",
-    help="Configuration preset",
-    metavar="STR",
-    type=str,
-    default="edm2-img64-s-fid",
-    show_default=True,
-)
+        "--preset",
+        help="Configuration preset",
+        metavar="STR",
+        type=str,
+        default="edm2-img64-s-fid",
+        show_default=True,
+    )
     @click.option(
         "--dataset_path",
         help="Path to the dataset",
@@ -222,7 +231,8 @@ def common_args(func):
 
     return wrapper
 
-@cmdline.command('train-gmm')
+
+@cmdline.command("train-gmm")
 @click.option(
     "--gridsearch",
     help="Whether to use a grid search on a number of components to find the best fit",
@@ -365,7 +375,7 @@ def train_flow(dataset_path, preset, outdir, epochs, batch_size, **flow_kwargs):
         train_ds, batch_size=batch_size, num_workers=4, prefetch_factor=2, shuffle=True
     )
     testiter = torch.utils.data.DataLoader(
-        val_ds, batch_size=batch_size*2, num_workers=4, prefetch_factor=2
+        val_ds, batch_size=batch_size * 2, num_workers=4, prefetch_factor=2
     )
 
     scorenet = build_model_from_pickle(preset)
@@ -392,10 +402,10 @@ def train_flow(dataset_path, preset, outdir, epochs, batch_size, **flow_kwargs):
     timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M")
     writer = SummaryWriter(f"{experiment_dir}/logs/{timestamp}")
 
-    with open(f"{experiment_dir}/logs/{timestamp}/config.json", "w") as f: 
+    with open(f"{experiment_dir}/logs/{timestamp}/config.json", "w") as f:
         json.dump(model.config, f, sort_keys=True, indent=4)
 
-    with open(f"{experiment_dir}/config.json", "w") as f: 
+    with open(f"{experiment_dir}/config.json", "w") as f:
         json.dump(model.config, f, sort_keys=True, indent=4)
 
     # totaliters = int(epochs * train_len)
@@ -463,7 +473,7 @@ def train_flow(dataset_path, preset, outdir, epochs, batch_size, **flow_kwargs):
 
     # Save final model
     torch.save(model.flow.state_dict(), f"{experiment_dir}/flow.pt")
-    
+
     writer.close()
 
 

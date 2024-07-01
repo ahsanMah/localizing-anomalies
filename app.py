@@ -11,7 +11,12 @@ import torch
 from huggingface_hub import hf_hub_download
 from safetensors.torch import load_file
 
-from msma import ScoreFlow, build_model_from_pickle, config_presets
+from msma import (
+    ScoreFlow,
+    build_model_from_config,
+    build_model_from_pickle,
+    config_presets,
+)
 
 
 @cache
@@ -32,7 +37,6 @@ def load_model_from_hub(preset, device):
     if 'DNNLIB_CACHE_DIR' in os.environ:
         cache_dir = os.environ["DNNLIB_CACHE_DIR"]
 
-    scorenet = build_model_from_pickle(preset)
 
     for fname in ['config.json', 'gmm.pkl', 'refscores.npz', 'model.safetensors' ]:
         cached_fname = hf_hub_download(
@@ -49,10 +53,10 @@ def load_model_from_hub(preset, device):
         print("Loaded:", model_params)
 
     hf_checkpoint = f"{modeldir}/model.safetensors"
-    model = ScoreFlow(scorenet, device=device, **model_params["PatchFlow"])
+    model = build_model_from_config(model_params)
     model.load_state_dict(load_file(hf_checkpoint), strict=True)
     model = model.eval().requires_grad_(False)
-
+    model.to(device)
     return model, modeldir
 
 
