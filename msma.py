@@ -231,8 +231,10 @@ def common_args(func):
 )
 @common_args
 def train_gmm(preset, outdir, gridsearch=False, **kwargs):
-    score_path = f"{outdir}/{preset}/imagenette_score_norms.pt"
+    outdir = f"{outdir}/{preset}"
+    score_path = f"{outdir}/imagenette_score_norms.pt"
     X = torch.load(score_path).numpy()
+    print(f"Loaded score norms from: {score_path} - # Samples: {X.shape[0]}")
 
     gm = GaussianMixture(
         n_components=7, init_params="kmeans", covariance_type="full", max_iter=100000
@@ -267,12 +269,14 @@ def train_gmm(preset, outdir, gridsearch=False, **kwargs):
     clf.fit(X)
     inlier_nll = -clf.score_samples(X)
 
+    print("Saving reference inlier scores ... ")
     os.makedirs(outdir, exist_ok=True)
     with open(f"{outdir}/refscores.npz", "wb") as f:
         np.savez_compressed(f, inlier_nll)
 
     with open(f"{outdir}/gmm.pkl", "wb") as f:
         dump(clf, f, protocol=5)
+    print("Saved GMM pickle.")
 
 
 @cmdline.command(name="cache-scores")
